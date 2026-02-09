@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+.npm/
+
+# Build artifacts
+artifacts/
+cache/
+typechain-types/
+
+# Circuit build outputs
+circuits/build/
+circuits/pot_final.ptau
+
+# Environment
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Coverage
+coverage/
+coverage.json
+
+# Deployment artifacts (keep deploy scripts, ignore outputs)
+deployments/

@@ -1,0 +1,49 @@
+{
+  "name": "digital-legacy-vault",
+  "version": "0.2.0",
+  "description": "Blockchain-powered inheritance protocol for digital assets — zero-knowledge, decentralized credential management using Shamir's Secret Sharing, smart contracts, and ZKP verification on Polygon.",
+  "author": "Brad Powell / Elev8.AI Consulting & Integration",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "test:phase1": "hardhat test test/DigitalLegacyVault.test.js",
+    "test:phase2": "hardhat test test/Phase2Verification.test.js",
+    "test:coverage": "hardhat coverage",
+    "deploy:local": "hardhat run scripts/deploy.js",
+    "deploy:testnet": "hardhat run scripts/deploy.js --network polygon_amoy",
+    "deploy:mainnet": "hardhat run scripts/deploy.js --network polygon",
+    "deploy:v2:local": "hardhat run scripts/deploy-v2.js",
+    "deploy:v2:testnet": "hardhat run scripts/deploy-v2.js --network polygon_amoy",
+    "deploy:v2:mainnet": "hardhat run scripts/deploy-v2.js --network polygon",
+    "verify": "hardhat verify --network polygon_amoy",
+    "node": "hardhat node",
+    "clean": "hardhat clean",
+    "lint:sol": "solhint 'contracts/**/*.sol'",
+    "size": "hardhat size-contracts",
+    "circuit:compile": "circom circuits/identity_proof.circom --r1cs --wasm --sym --c -o circuits/build",
+    "circuit:setup": "snarkjs groth16 setup circuits/build/identity_proof.r1cs circuits/pot_final.ptau circuits/build/circuit.zkey",
+    "circuit:contribute": "snarkjs zkey contribute circuits/build/circuit.zkey circuits/build/final.zkey --name='DLV Phase 2'",
+    "circuit:vkey": "snarkjs zkey export verificationkey circuits/build/final.zkey circuits/verification_key.json",
+    "circuit:verifier": "snarkjs zkey export solidityverifier circuits/build/final.zkey contracts/Groth16VerifierGenerated.sol",
+    "circuit:all": "npm run circuit:compile && npm run circuit:setup && npm run circuit:contribute && npm run circuit:vkey"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "hardhat": "^2.19.0",
+    "dotenv": "^16.3.1",
+    "solhint": "^4.0.0",
+    "circomlib": "^2.0.5",
+    "circom_tester": "^0.0.19"
+  },
+  "dependencies": {
+    "ethers": "^6.9.0",
+    "snarkjs": "^0.7.4",
+    "poseidon-lite": "^0.2.0",
+    "@chainlink/contracts": "^1.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

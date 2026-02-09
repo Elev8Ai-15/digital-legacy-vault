@@ -259,32 +259,6 @@ function base64ToArrayBuffer(base64) {
   return base64ToUint8Array(base64).buffer;
 }
 
-/**
- * Estimate password strength (basic — use zxcvbn in production)
- * @param {string} password
- * @returns {{score: number, feedback: string}} Score 0-4
- */
-function estimatePasswordStrength(password) {
-  let score = 0;
-  if (password.length >= 8) score++;
-  if (password.length >= 12) score++;
-  if (/[a-z]/.test(password) && /[A-Z]/.test(password)) score++;
-  if (/\d/.test(password)) score++;
-  if (/[^a-zA-Z0-9]/.test(password)) score++;
-  
-  score = Math.min(score, 4);
-  
-  const feedback = [
-    "Very weak — easily crackable",
-    "Weak — add more character types",
-    "Fair — consider making it longer",
-    "Strong — good complexity",
-    "Very strong — excellent",
-  ][score];
-  
-  return { score, feedback };
-}
-
 // ============================================================
 // EXPORTS
 // ============================================================
@@ -297,5 +271,4 @@ export {
   deriveKey,
   generateSalt,
   generateIV,
-  estimatePasswordStrength,
 };

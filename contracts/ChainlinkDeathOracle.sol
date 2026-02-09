@@ -222,18 +222,45 @@ contract ChainlinkDeathOracle is FunctionsClient, IOracle {
         if (bytes(_dateOfDeath).length == 0) revert InvalidCertificateData();
 
         // Rate limit: 1 request per hour per vault
+        _checkRateLimit(_vaultOwner);
+
+        // Build and send Chainlink Functions request
+        requestId = _buildAndSendRequest(
+            _certificateHash, _decedentName, _dateOfDeath, _stateOfDeath, _ssnLast4
+        );
+
+        // Store request data
+        _storeRequest(
+            requestId, _vaultOwner, _certificateHash,
+            _decedentName, _dateOfDeath, _stateOfDeath, _ssnLast4
+        );
+
+        latestRequestId[_vaultOwner] = requestId;
+
+        emit VerificationRequested(requestId, _vaultOwner, msg.sender, _certificateHash);
+
+        return requestId;
+    }
+
+    function _checkRateLimit(address _vaultOwner) internal view {
         bytes32 lastReq = latestRequestId[_vaultOwner];
         if (lastReq != bytes32(0) && !verificationRequests[lastReq].fulfilled) {
             if (block.timestamp < verificationRequests[lastReq].requestedAt + 1 hours) {
                 revert RequestTooRecent();
             }
         }
+    }
 
-        // Build Chainlink Functions request
+    function _buildAndSendRequest(
+        bytes32 _certificateHash,
+        string calldata _decedentName,
+        string calldata _dateOfDeath,
+        string calldata _stateOfDeath,
+        string calldata _ssnLast4
+    ) internal returns (bytes32) {
         FunctionsRequest.Request memory req;
         req.initializeRequestForInlineJavaScript(sourceCode);
 
-        // Pass verification parameters as request args
         string[] memory args = new string[](5);
         args[0] = _decedentName;
         args[1] = _dateOfDeath;
@@ -242,34 +269,32 @@ contract ChainlinkDeathOracle is FunctionsClient, IOracle {
         args[4] = _toHexString(_certificateHash);
         req.setArgs(args);
 
-        // Send request to Chainlink DON
-        requestId = _sendRequest(
+        return _sendRequest(
             req.encodeCBOR(),
             subscriptionId,
             gasLimit,
             donId
         );
+    }
 
-        // Store request data
-        verificationRequests[requestId] = VerificationRequest({
-            requester: msg.sender,
-            vaultOwner: _vaultOwner,
-            certificateHash: _certificateHash,
-            decedentName: _decedentName,
-            dateOfDeath: _dateOfDeath,
-            stateOfDeath: _stateOfDeath,
-            ssnLast4: _ssnLast4,
-            requestedAt: block.timestamp,
-            fulfilled: false,
-            verified: false,
-            confidence: 0
-        });
-
-        latestRequestId[_vaultOwner] = requestId;
-
-        emit VerificationRequested(requestId, _vaultOwner, msg.sender, _certificateHash);
-
-        return requestId;
+    function _storeRequest(
+        bytes32 requestId,
+        address _vaultOwner,
+        bytes32 _certificateHash,
+        string calldata _decedentName,
+        string calldata _dateOfDeath,
+        string calldata _stateOfDeath,
+        string calldata _ssnLast4
+    ) internal {
+        VerificationRequest storage req = verificationRequests[requestId];
+        req.requester = msg.sender;
+        req.vaultOwner = _vaultOwner;
+        req.certificateHash = _certificateHash;
+        req.decedentName = _decedentName;
+        req.dateOfDeath = _dateOfDeath;
+        req.stateOfDeath = _stateOfDeath;
+        req.ssnLast4 = _ssnLast4;
+        req.requestedAt = block.timestamp;
     }
 
 
@@ -307,9 +332,9 @@ contract ChainlinkDeathOracle is FunctionsClient, IOracle {
         // Decode response
         (
             uint8 sourcesConfirmed,
-            bool ssaMatch,
-            bool stateMatch,
-            bool notaryMatch
+            , // ssaMatch (reserved for detailed logging)
+            , // stateMatch
+              // notaryMatch
         ) = abi.decode(response, (uint8, bool, bool, bool));
 
         // Calculate confidence
@@ -402,7 +427,7 @@ contract ChainlinkDeathOracle is FunctionsClient, IOracle {
         bytes calldata proof
     ) external view override returns (bool verified, uint256 confidence) {
         if (certificateHash == bytes32(0)) return (false, 0);
-        if (proof.length < 20) return (false, 0);
+        if (proof.length < 32) return (false, 0);
         
         // Decode the vault owner address from the proof bytes
         // VaultV2 passes ABI-encoded vault owner for lookup

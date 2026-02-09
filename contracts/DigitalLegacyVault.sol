@@ -95,7 +95,7 @@ contract DigitalLegacyVault {
     // STATE VARIABLES
     // --------------------------------------------------------
 
-    mapping(address => Vault) public vaults;
+    mapping(address => Vault) internal vaults;
     mapping(address => mapping(uint8 => Guardian)) public guardians;
     mapping(address => bool) public hasVault;
     
@@ -107,8 +107,6 @@ contract DigitalLegacyVault {
     uint256 public constant MIN_GRACE_PERIOD = 30 days;
     uint256 public constant MAX_GUARDIANS = 7;
     uint256 public constant MIN_GUARDIANS = 3;
-    uint256 public constant CLAIM_COOLDOWN = 14 days;
-
     // --------------------------------------------------------
     // EVENTS
     // --------------------------------------------------------
@@ -164,6 +162,7 @@ contract DigitalLegacyVault {
     // --------------------------------------------------------
 
     constructor(address _oracle) {
+        require(_oracle != address(0), "Invalid oracle address");
         admin = msg.sender;
         oracle = IOracle(_oracle);
     }
@@ -206,7 +205,6 @@ contract DigitalLegacyVault {
         v.lastCheckIn = block.timestamp;
         v.checkInInterval = _checkInInterval;
         v.gracePeriod = _gracePeriod;
-        v.claimCooldown = CLAIM_COOLDOWN;
         v.requiredGuardians = _requiredGuardians;
 
         hasVault[msg.sender] = true;
@@ -253,6 +251,11 @@ contract DigitalLegacyVault {
         require(v.guardianCount < MAX_GUARDIANS, "Max guardians reached");
         require(_guardian != address(0), "Invalid guardian address");
         require(_guardian != msg.sender, "Owner cannot be guardian");
+
+        // Check for duplicates
+        for (uint8 i = 0; i < v.guardianCount; i++) {
+            require(guardians[msg.sender][i].guardianAddress != _guardian, "Duplicate guardian");
+        }
 
         uint8 idx = v.guardianCount;
         guardians[msg.sender][idx] = Guardian({

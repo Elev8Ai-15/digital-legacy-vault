@@ -31,7 +31,7 @@ module.exports = {
         enabled: true,
         runs: 200, // Optimize for deployment cost
       },
-      viaIR: true, // Enable IR-based code generation for better optimization
+      viaIR: true, // Required for Groth16Verifier generated code
     },
   },
 

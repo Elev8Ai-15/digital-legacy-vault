@@ -126,7 +126,9 @@ contract ZKPIdentityVerifier {
      * 
      * @param _vaultOwner       Address of the vault being claimed
      * @param _identityHash     The identity hash stored in the vault contract
-     * @param _proof            Groth16 proof components [pA, pB, pC]
+     * @param _pA               Groth16 proof component A (G1 point)
+     * @param _pB               Groth16 proof component B (G2 point)
+     * @param _pC               Groth16 proof component C (G1 point)
      * @param _pubSignals       Public signals: [identity_hash, vault_owner_uint, claim_timestamp, min_timestamp, claim_binding]
      * 
      * @return valid            Whether the proof is valid

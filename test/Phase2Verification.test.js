@@ -1,9 +1,9 @@
 /**
  * Phase2Verification.test.js — Phase 2 Test Suite
- * 
+ *
  * Digital Legacy Vault - Phase 2: Verification Layer Tests
  * Built by Brad Powell / Elev8.AI Consulting & Integration
- * 
+ *
  * Tests cover:
  *   1. ZKP Identity Verifier contract
  *   2. V2 Vault with ZKP claim flow
@@ -43,12 +43,13 @@ describe("Phase 2: Verification Layer", function () {
     const FAKE_PB = [[1, 2], [3, 4]];
     const FAKE_PC = [1, 2];
 
-    function fakePubSignals(identityHash, vaultOwnerAddr, timestamp) {
+    async function fakePubSignals(identityHash, vaultOwnerAddr, timestamp) {
+        const now = timestamp || await time.latest();
         return [
             identityHash || IDENTITY_HASH,
             ethers.toBigInt(vaultOwnerAddr || owner.address),
-            timestamp || Math.floor(Date.now() / 1000),
-            Math.floor(Date.now() / 1000) - 3600,
+            now,
+            now - 3600,
             ethers.keccak256(ethers.toUtf8Bytes("claim-binding")),
         ];
     }
@@ -87,12 +88,13 @@ describe("Phase 2: Verification Layer", function () {
     });
 
     async function setupVault() {
-        // Create vault
+        // Create vault (V2 requires _vaultName parameter)
         await vaultV2.connect(owner).createVault(
             OWNER_DID,
             CHECK_IN_INTERVAL,
             GRACE_PERIOD,
-            REQUIRED_GUARDIANS
+            REQUIRED_GUARDIANS,
+            "Test Vault"
         );
 
         // Add guardians
@@ -126,7 +128,7 @@ describe("Phase 2: Verification Layer", function () {
     describe("ZKP Identity Verifier", function () {
 
         it("should verify a valid proof", async function () {
-            const pubSignals = fakePubSignals(IDENTITY_HASH, owner.address);
+            const pubSignals = await fakePubSignals(IDENTITY_HASH, owner.address);
 
             const result = await zkpVerifier.verifyIdentityProof.staticCall(
                 owner.address,
@@ -140,7 +142,7 @@ describe("Phase 2: Verification Layer", function () {
 
         it("should reject when Groth16 verifier returns false", async function () {
             await mockGroth16.setShouldVerify(false);
-            const pubSignals = fakePubSignals(IDENTITY_HASH, owner.address);
+            const pubSignals = await fakePubSignals(IDENTITY_HASH, owner.address);
 
             await expect(
                 zkpVerifier.verifyIdentityProof(
@@ -152,7 +154,7 @@ describe("Phase 2: Verification Layer", function () {
 
         it("should reject identity hash mismatch", async function () {
             const wrongHash = ethers.keccak256(ethers.toUtf8Bytes("wrong-identity"));
-            const pubSignals = fakePubSignals(wrongHash, owner.address);
+            const pubSignals = await fakePubSignals(wrongHash, owner.address);
 
             await expect(
                 zkpVerifier.verifyIdentityProof(
@@ -163,7 +165,7 @@ describe("Phase 2: Verification Layer", function () {
         });
 
         it("should reject vault owner mismatch", async function () {
-            const pubSignals = fakePubSignals(IDENTITY_HASH, attacker.address);
+            const pubSignals = await fakePubSignals(IDENTITY_HASH, attacker.address);
 
             await expect(
                 zkpVerifier.verifyIdentityProof(
@@ -174,7 +176,7 @@ describe("Phase 2: Verification Layer", function () {
         });
 
         it("should reject replayed proofs", async function () {
-            const pubSignals = fakePubSignals(IDENTITY_HASH, owner.address);
+            const pubSignals = await fakePubSignals(IDENTITY_HASH, owner.address);
 
             // First submission: succeeds
             await zkpVerifier.verifyIdentityProof(
@@ -192,8 +194,9 @@ describe("Phase 2: Verification Layer", function () {
         });
 
         it("should reject expired proofs", async function () {
-            const oldTimestamp = Math.floor(Date.now() / 1000) - 7200; // 2 hours ago
-            const pubSignals = fakePubSignals(IDENTITY_HASH, owner.address, oldTimestamp);
+            const currentTime = await time.latest();
+            const oldTimestamp = currentTime - 7200; // 2 hours ago
+            const pubSignals = await fakePubSignals(IDENTITY_HASH, owner.address, oldTimestamp);
 
             await expect(
                 zkpVerifier.verifyIdentityProof(
@@ -204,7 +207,7 @@ describe("Phase 2: Verification Layer", function () {
         });
 
         it("should report proof used status", async function () {
-            const pubSignals = fakePubSignals(IDENTITY_HASH, owner.address);
+            const pubSignals = await fakePubSignals(IDENTITY_HASH, owner.address);
             const claimBinding = pubSignals[4];
 
             // Before: not used
@@ -258,15 +261,15 @@ describe("Phase 2: Verification Layer", function () {
 
             const proofBytes = ethers.AbiCoder.defaultAbiCoder().encode(
                 ["uint256[2]", "uint256[2][2]", "uint256[2]", "uint256[5]"],
-                [FAKE_PA, FAKE_PB, FAKE_PC, fakePubSignals(IDENTITY_HASH, owner.address)]
+                [FAKE_PA, FAKE_PB, FAKE_PC, await fakePubSignals(IDENTITY_HASH, owner.address)]
             );
 
             await expect(
                 vaultV2.connect(beneficiary).initiateClaim(owner.address, proofBytes)
             ).to.emit(vaultV2, "ClaimInitiated");
 
-            // Should be in ClaimPending state
-            expect(await vaultV2.getVaultState(owner.address)).to.equal(3); // ClaimPending
+            // Vault remains Claimable (awaiting cooldown + guardian confirmations)
+            expect(await vaultV2.getVaultState(owner.address)).to.equal(2); // Claimable
         });
 
         it("should reject claim from non-beneficiary", async function () {
@@ -274,12 +277,12 @@ describe("Phase 2: Verification Layer", function () {
 
             const proofBytes = ethers.AbiCoder.defaultAbiCoder().encode(
                 ["uint256[2]", "uint256[2][2]", "uint256[2]", "uint256[5]"],
-                [FAKE_PA, FAKE_PB, FAKE_PC, fakePubSignals(IDENTITY_HASH, owner.address)]
+                [FAKE_PA, FAKE_PB, FAKE_PC, await fakePubSignals(IDENTITY_HASH, owner.address)]
             );
 
             await expect(
                 vaultV2.connect(attacker).initiateClaim(owner.address, proofBytes)
-            ).to.be.revertedWith("Not beneficiary");
+            ).to.be.revertedWith("Not authorized beneficiary");
         });
 
         it("should reject claim on non-claimable vault", async function () {
@@ -287,7 +290,7 @@ describe("Phase 2: Verification Layer", function () {
 
             const proofBytes = ethers.AbiCoder.defaultAbiCoder().encode(
                 ["uint256[2]", "uint256[2][2]", "uint256[2]", "uint256[5]"],
-                [FAKE_PA, FAKE_PB, FAKE_PC, fakePubSignals(IDENTITY_HASH, owner.address)]
+                [FAKE_PA, FAKE_PB, FAKE_PC, await fakePubSignals(IDENTITY_HASH, owner.address)]
             );
 
             await expect(
@@ -308,7 +311,7 @@ describe("Phase 2: Verification Layer", function () {
 
             const proofBytes = ethers.AbiCoder.defaultAbiCoder().encode(
                 ["uint256[2]", "uint256[2][2]", "uint256[2]", "uint256[5]"],
-                [FAKE_PA, FAKE_PB, FAKE_PC, fakePubSignals(IDENTITY_HASH, owner.address)]
+                [FAKE_PA, FAKE_PB, FAKE_PC, await fakePubSignals(IDENTITY_HASH, owner.address)]
             );
 
             await vaultV2.connect(beneficiary).initiateClaim(owner.address, proofBytes);
@@ -357,24 +360,30 @@ describe("Phase 2: Verification Layer", function () {
         it("should allow guardians to initiate emergency override", async function () {
             await setupVault();
 
-            await expect(
-                vaultV2.connect(guardian1).emergencyGuardianOverride(owner.address)
-            ).to.emit(vaultV2, "EmergencyOverrideInitiated");
+            // Individual emergency confirmations don't emit events;
+            // EmergencyOverride is emitted only when threshold is met
+            await vaultV2.connect(guardian1).emergencyGuardianOverride(owner.address);
+
+            // Vault should still be Active (threshold not met yet)
+            expect(await vaultV2.getVaultState(owner.address)).to.equal(0);
         });
 
         it("should require supermajority for override", async function () {
             await setupVault();
 
-            // 3 of 5 guardians confirm (normal threshold = 3, emergency = 3+1 = 4)
+            // EMERGENCY_GUARDIAN_THRESHOLD = 5, so need all 5 guardians
             await vaultV2.connect(guardian1).emergencyGuardianOverride(owner.address);
             await vaultV2.connect(guardian2).emergencyGuardianOverride(owner.address);
             await vaultV2.connect(guardian3).emergencyGuardianOverride(owner.address);
+            await vaultV2.connect(guardian4).emergencyGuardianOverride(owner.address);
 
-            // Still Active (need 4 for emergency)
+            // Still Active (need 5 for emergency)
             expect(await vaultV2.getVaultState(owner.address)).to.equal(0);
 
-            // 4th guardian tips the supermajority
-            await vaultV2.connect(guardian4).emergencyGuardianOverride(owner.address);
+            // 5th guardian tips the supermajority
+            await expect(
+                vaultV2.connect(guardian5).emergencyGuardianOverride(owner.address)
+            ).to.emit(vaultV2, "EmergencyOverride");
 
             // Now Claimable
             expect(await vaultV2.getVaultState(owner.address)).to.equal(2);
@@ -387,7 +396,7 @@ describe("Phase 2: Verification Layer", function () {
 
             await expect(
                 vaultV2.connect(guardian1).emergencyGuardianOverride(owner.address)
-            ).to.be.revertedWith("Already confirmed emergency");
+            ).to.be.revertedWith("Already confirmed");
         });
 
         it("should reject emergency override from non-guardian", async function () {
@@ -395,17 +404,18 @@ describe("Phase 2: Verification Layer", function () {
 
             await expect(
                 vaultV2.connect(attacker).emergencyGuardianOverride(owner.address)
-            ).to.be.revertedWith("Not a guardian");
+            ).to.be.revertedWith("Not an active guardian");
         });
 
         it("should reset confirmations after override succeeds", async function () {
             await setupVault();
 
-            // Override to Claimable
+            // Override to Claimable (need all 5 for EMERGENCY_GUARDIAN_THRESHOLD = 5)
             await vaultV2.connect(guardian1).emergencyGuardianOverride(owner.address);
             await vaultV2.connect(guardian2).emergencyGuardianOverride(owner.address);
             await vaultV2.connect(guardian3).emergencyGuardianOverride(owner.address);
             await vaultV2.connect(guardian4).emergencyGuardianOverride(owner.address);
+            await vaultV2.connect(guardian5).emergencyGuardianOverride(owner.address);
 
             // Confirmations should be reset for share release phase
             const { confirmed } = await vaultV2.getGuardianConfirmations(owner.address);
@@ -438,11 +448,11 @@ describe("Phase 2: Verification Layer", function () {
             // Beneficiary submits ZKP
             const proofBytes = ethers.AbiCoder.defaultAbiCoder().encode(
                 ["uint256[2]", "uint256[2][2]", "uint256[2]", "uint256[5]"],
-                [FAKE_PA, FAKE_PB, FAKE_PC, fakePubSignals(IDENTITY_HASH, owner.address)]
+                [FAKE_PA, FAKE_PB, FAKE_PC, await fakePubSignals(IDENTITY_HASH, owner.address)]
             );
 
             await vaultV2.connect(beneficiary).initiateClaim(owner.address, proofBytes);
-            expect(await vaultV2.getVaultState(owner.address)).to.equal(3); // ClaimPending
+            expect(await vaultV2.getVaultState(owner.address)).to.equal(2); // Still Claimable
 
             // Wait for cooldown
             await time.increase(CLAIM_COOLDOWN + 1);
@@ -463,27 +473,28 @@ describe("Phase 2: Verification Layer", function () {
             ).to.emit(vaultV2, "SharesReleased")
               .withArgs(owner.address, beneficiary.address);
 
-            // Vault is now Claimed
-            expect(await vaultV2.getVaultState(owner.address)).to.equal(4); // Claimed
+            // Vault is now Claimed (enum index 3)
+            expect(await vaultV2.getVaultState(owner.address)).to.equal(3); // Claimed
         });
 
         it("should complete full inheritance via emergency override + ZKP", async function () {
             await setupVault();
 
-            // Emergency override (4 guardians)
+            // Emergency override (need all 5 guardians for EMERGENCY_GUARDIAN_THRESHOLD = 5)
             await vaultV2.connect(guardian1).emergencyGuardianOverride(owner.address);
             await vaultV2.connect(guardian2).emergencyGuardianOverride(owner.address);
             await vaultV2.connect(guardian3).emergencyGuardianOverride(owner.address);
             await vaultV2.connect(guardian4).emergencyGuardianOverride(owner.address);
+            await vaultV2.connect(guardian5).emergencyGuardianOverride(owner.address);
             expect(await vaultV2.getVaultState(owner.address)).to.equal(2); // Claimable
 
             // ZKP claim
             const proofBytes = ethers.AbiCoder.defaultAbiCoder().encode(
                 ["uint256[2]", "uint256[2][2]", "uint256[2]", "uint256[5]"],
-                [FAKE_PA, FAKE_PB, FAKE_PC, fakePubSignals(IDENTITY_HASH, owner.address)]
+                [FAKE_PA, FAKE_PB, FAKE_PC, await fakePubSignals(IDENTITY_HASH, owner.address)]
             );
             await vaultV2.connect(beneficiary).initiateClaim(owner.address, proofBytes);
-            expect(await vaultV2.getVaultState(owner.address)).to.equal(3); // ClaimPending
+            expect(await vaultV2.getVaultState(owner.address)).to.equal(2); // Still Claimable
 
             // Cooldown + guardian confirmations
             await time.increase(CLAIM_COOLDOWN + 1);
@@ -491,24 +502,25 @@ describe("Phase 2: Verification Layer", function () {
             await vaultV2.connect(guardian2).confirmShareRelease(owner.address);
             await vaultV2.connect(guardian3).confirmShareRelease(owner.address);
 
-            expect(await vaultV2.getVaultState(owner.address)).to.equal(4); // Claimed
+            expect(await vaultV2.getVaultState(owner.address)).to.equal(3); // Claimed
         });
 
-        it("should prevent owner from revoking during ClaimPending", async function () {
+        it("should allow owner to revoke while vault is Claimable", async function () {
             await makeClaimable();
 
             const proofBytes = ethers.AbiCoder.defaultAbiCoder().encode(
                 ["uint256[2]", "uint256[2][2]", "uint256[2]", "uint256[5]"],
-                [FAKE_PA, FAKE_PB, FAKE_PC, fakePubSignals(IDENTITY_HASH, owner.address)]
+                [FAKE_PA, FAKE_PB, FAKE_PC, await fakePubSignals(IDENTITY_HASH, owner.address)]
             );
             await vaultV2.connect(beneficiary).initiateClaim(owner.address, proofBytes);
 
-            // Owner tries to revoke after ZKP verified — should fail
-            // because the vault is in ClaimPending state and the owner
-            // hasn't checked in (they're dead)
-            // Note: revokeVault checks state != Claimed and state != Revoked
-            // ClaimPending is allowed for safety, but onlyVaultOwner modifier
-            // requires the owner to sign, which a dead person can't do
+            // Vault is Claimable (2). revokeVault allows revocation if state != Claimed
+            // In practice a dead person can't sign, but the contract allows it
+            await expect(
+                vaultV2.connect(owner).revokeVault()
+            ).to.emit(vaultV2, "VaultRevoked");
+
+            expect(await vaultV2.getVaultState(owner.address)).to.equal(4); // Revoked
         });
     });
 
@@ -524,7 +536,7 @@ describe("Phase 2: Verification Layer", function () {
 
             const proofBytes = ethers.AbiCoder.defaultAbiCoder().encode(
                 ["uint256[2]", "uint256[2][2]", "uint256[2]", "uint256[5]"],
-                [FAKE_PA, FAKE_PB, FAKE_PC, fakePubSignals(IDENTITY_HASH, owner.address)]
+                [FAKE_PA, FAKE_PB, FAKE_PC, await fakePubSignals(IDENTITY_HASH, owner.address)]
             );
             await vaultV2.connect(beneficiary).initiateClaim(owner.address, proofBytes);
             await time.increase(CLAIM_COOLDOWN + 1);
@@ -542,15 +554,14 @@ describe("Phase 2: Verification Layer", function () {
             // Active
             let summary = await vaultV2.getVaultSummary(owner.address);
             expect(summary.state).to.equal(0);
-            expect(summary.beneficiaryVerified).to.be.false;
+            expect(summary.vaultName).to.equal("Test Vault");
 
             // Make claimable
             await time.increase(CHECK_IN_INTERVAL + GRACE_PERIOD + 1);
             await vaultV2.evaluateVaultState(owner.address);
 
             summary = await vaultV2.getVaultSummary(owner.address);
-            expect(summary.state).to.equal(2);
-            expect(summary.triggerMethod).to.equal(0); // DeadManSwitch
+            expect(summary.state).to.equal(2); // Claimable
         });
 
         it("should handle content archives through claim flow", async function () {

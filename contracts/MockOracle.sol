@@ -68,13 +68,13 @@ contract MockOracle is IOracle {
     /**
      * @notice Verify a death certificate (called by DigitalLegacyVault)
      * @param certificateHash Hash of the certificate to verify
-     * @param proof Additional proof data (unused in mock, required by interface)
+     * @param - Additional proof data (unused in mock, required by interface)
      * @return verified Whether the certificate is verified
      * @return confidence Confidence score (0-100)
      */
     function verifyDeathCertificate(
         bytes32 certificateHash,
-        bytes calldata proof
+        bytes calldata /* proof */
     ) external view override returns (bool verified, uint256 confidence) {
         // In production: call external API via Chainlink, verify signatures, etc.
         // In mock: check our registered certificates mapping

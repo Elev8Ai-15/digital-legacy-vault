@@ -158,32 +158,80 @@ contract Groth16Verifier {
         }
 
         // Compute IC = ic[0] + pubSignals[0]*ic[1] + ... + pubSignals[4]*ic[5]
-        uint256[2] memory vk_x = vk_ic[0];
-        
+        uint256[2] memory vk_x = _computeIC(_pubSignals);
+
+        // Build pairing input and verify
+        return _verifyPairing(_pA, _pB, _pC, vk_x);
+    }
+
+    /**
+     * @notice Compute the IC linear combination for public inputs
+     */
+    function _computeIC(
+        uint[5] calldata _pubSignals
+    ) internal view returns (uint256[2] memory vk_x) {
+        vk_x = vk_ic[0];
+
         for (uint256 i = 0; i < NUM_PUBLIC_INPUTS; i++) {
             // Scalar multiplication: pubSignals[i] * ic[i+1]
-            (uint256 sx, uint256 sy) = scalarMul(vk_ic[i+1], _pubSignals[i]);
+            (uint256 sx, uint256 sy) = _scalarMul(vk_ic[i+1], _pubSignals[i]);
             // Point addition: vk_x = vk_x + result
-            (vk_x[0], vk_x[1]) = pointAdd(vk_x[0], vk_x[1], sx, sy);
+            (vk_x[0], vk_x[1]) = _pointAdd(vk_x[0], vk_x[1], sx, sy);
         }
+    }
 
-        // Pairing check
-        // e(-A, B) * e(alpha, beta) * e(IC, gamma) * e(C, delta) == 1
-        
-        return pairingCheck(
-            // Negate A (negate y coordinate)
-            _pA[0], (FIELD_MODULUS - _pA[1]) % FIELD_MODULUS,
-            _pB[0][0], _pB[0][1], _pB[1][0], _pB[1][1],
-            // Alpha
-            vk_alpha[0], vk_alpha[1],
-            vk_beta[0][0], vk_beta[0][1], vk_beta[1][0], vk_beta[1][1],
-            // IC
-            vk_x[0], vk_x[1],
-            vk_gamma[0][0], vk_gamma[0][1], vk_gamma[1][0], vk_gamma[1][1],
-            // C
-            _pC[0], _pC[1],
-            vk_delta[0][0], vk_delta[0][1], vk_delta[1][0], vk_delta[1][1]
-        );
+    /**
+     * @notice Build pairing input array and run the pairing check
+     */
+    function _verifyPairing(
+        uint[2] calldata _pA,
+        uint[2][2] calldata _pB,
+        uint[2] calldata _pC,
+        uint256[2] memory vk_x
+    ) internal view returns (bool) {
+        uint256[24] memory input;
+
+        // Pair 1: (-A, B) — negate A's y coordinate
+        input[0] = _pA[0];
+        input[1] = (FIELD_MODULUS - _pA[1]) % FIELD_MODULUS;
+        input[2] = _pB[0][1]; // G2 coords in reverse order for precompile
+        input[3] = _pB[0][0];
+        input[4] = _pB[1][1];
+        input[5] = _pB[1][0];
+
+        // Pair 2: (alpha, beta)
+        input[6] = vk_alpha[0];
+        input[7] = vk_alpha[1];
+        input[8] = vk_beta[0][1];
+        input[9] = vk_beta[0][0];
+        input[10] = vk_beta[1][1];
+        input[11] = vk_beta[1][0];
+
+        // Pair 3: (IC, gamma)
+        input[12] = vk_x[0];
+        input[13] = vk_x[1];
+        input[14] = vk_gamma[0][1];
+        input[15] = vk_gamma[0][0];
+        input[16] = vk_gamma[1][1];
+        input[17] = vk_gamma[1][0];
+
+        // Pair 4: (C, delta)
+        input[18] = _pC[0];
+        input[19] = _pC[1];
+        input[20] = vk_delta[0][1];
+        input[21] = vk_delta[0][0];
+        input[22] = vk_delta[1][1];
+        input[23] = vk_delta[1][0];
+
+        uint256[1] memory result;
+        bool success;
+
+        assembly ("memory-safe") {
+            success := staticcall(gas(), 0x08, input, 0x300, result, 0x20)
+        }
+        require(success, "Pairing check failed");
+
+        return result[0] == 1;
     }
 
     // ============================================================
@@ -193,7 +241,7 @@ contract Groth16Verifier {
     /**
      * @notice Elliptic curve point addition using EVM precompile (0x06)
      */
-    function pointAdd(
+    function _pointAdd(
         uint256 x1, uint256 y1,
         uint256 x2, uint256 y2
     ) internal view returns (uint256 x3, uint256 y3) {
@@ -206,7 +254,7 @@ contract Groth16Verifier {
         uint256[2] memory result;
         bool success;
 
-        assembly {
+        assembly ("memory-safe") {
             success := staticcall(gas(), 0x06, input, 0x80, result, 0x40)
         }
         require(success, "Point addition failed");
@@ -217,7 +265,7 @@ contract Groth16Verifier {
     /**
      * @notice Scalar multiplication using EVM precompile (0x07)
      */
-    function scalarMul(
+    function _scalarMul(
         uint256[2] memory point,
         uint256 scalar
     ) internal view returns (uint256 x, uint256 y) {
@@ -229,71 +277,12 @@ contract Groth16Verifier {
         uint256[2] memory result;
         bool success;
 
-        assembly {
+        assembly ("memory-safe") {
             success := staticcall(gas(), 0x07, input, 0x60, result, 0x40)
         }
         require(success, "Scalar multiplication failed");
 
         return (result[0], result[1]);
-    }
-
-    /**
-     * @notice BN128 pairing check using EVM precompile (0x08)
-     * @dev Checks e(a1,b1)*e(a2,b2)*e(a3,b3)*e(a4,b4) == 1
-     */
-    function pairingCheck(
-        uint256 a1x, uint256 a1y,
-        uint256 b1x0, uint256 b1x1, uint256 b1y0, uint256 b1y1,
-        uint256 a2x, uint256 a2y,
-        uint256 b2x0, uint256 b2x1, uint256 b2y0, uint256 b2y1,
-        uint256 a3x, uint256 a3y,
-        uint256 b3x0, uint256 b3x1, uint256 b3y0, uint256 b3y1,
-        uint256 a4x, uint256 a4y,
-        uint256 b4x0, uint256 b4x1, uint256 b4y0, uint256 b4y1
-    ) internal view returns (bool) {
-        uint256[24] memory input;
-        
-        // Pair 1: (-A, B)
-        input[0] = a1x;
-        input[1] = a1y;
-        input[2] = b1x1;  // Note: G2 coords are in reverse order for precompile
-        input[3] = b1x0;
-        input[4] = b1y1;
-        input[5] = b1y0;
-        
-        // Pair 2: (alpha, beta)
-        input[6] = a2x;
-        input[7] = a2y;
-        input[8] = b2x1;
-        input[9] = b2x0;
-        input[10] = b2y1;
-        input[11] = b2y0;
-        
-        // Pair 3: (IC, gamma)
-        input[12] = a3x;
-        input[13] = a3y;
-        input[14] = b3x1;
-        input[15] = b3x0;
-        input[16] = b3y1;
-        input[17] = b3y0;
-        
-        // Pair 4: (C, delta)
-        input[18] = a4x;
-        input[19] = a4y;
-        input[20] = b4x1;
-        input[21] = b4x0;
-        input[22] = b4y1;
-        input[23] = b4y0;
-
-        uint256[1] memory result;
-        bool success;
-
-        assembly {
-            success := staticcall(gas(), 0x08, input, 0x300, result, 0x20)
-        }
-        require(success, "Pairing check failed");
-
-        return result[0] == 1;
     }
 
     // ============================================================

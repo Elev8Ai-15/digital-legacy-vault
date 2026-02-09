@@ -13,6 +13,8 @@ circuits/pot_final.ptau
 
 # Environment
 .env
+.env.local
+.env.*.local
 
 # Python
 __pycache__/
@@ -33,6 +35,10 @@ Thumbs.db
 # Coverage
 coverage/
 coverage.json
+
+# Logs
+*.log
+npm-debug.log*
 
 # Deployment artifacts (keep deploy scripts, ignore outputs)
 deployments/

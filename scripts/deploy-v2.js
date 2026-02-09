@@ -95,20 +95,10 @@ async function main() {
   // ─────────────────────────────────────────────────
   console.log("\n2. Deploying ZKPIdentityVerifier...");
 
-  let zkpVerifierAddress;
-
-  if (isLocal || isTestnet) {
-    // Deploy MockGroth16Verifier for testing, then ZKPIdentityVerifier
-    const ZKPVerifier = await hre.ethers.getContractFactory("ZKPIdentityVerifier");
-    const zkpVerifier = await ZKPVerifier.deploy(deployed.groth16Verifier);
-    await zkpVerifier.waitForDeployment();
-    zkpVerifierAddress = await zkpVerifier.getAddress();
-  } else {
-    const ZKPVerifier = await hre.ethers.getContractFactory("ZKPIdentityVerifier");
-    const zkpVerifier = await ZKPVerifier.deploy(deployed.groth16Verifier);
-    await zkpVerifier.waitForDeployment();
-    zkpVerifierAddress = await zkpVerifier.getAddress();
-  }
+  const ZKPVerifier = await hre.ethers.getContractFactory("ZKPIdentityVerifier");
+  const zkpVerifier = await ZKPVerifier.deploy(deployed.groth16Verifier);
+  await zkpVerifier.waitForDeployment();
+  const zkpVerifierAddress = await zkpVerifier.getAddress();
 
   deployed.zkpVerifier = zkpVerifierAddress;
   console.log(`   ZKPIdentityVerifier: ${deployed.zkpVerifier}`);

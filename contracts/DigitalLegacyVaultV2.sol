@@ -116,7 +116,7 @@ contract DigitalLegacyVaultV2 {
     // STATE VARIABLES
     // --------------------------------------------------------
 
-    mapping(address => Vault) public vaults;
+    mapping(address => Vault) internal vaults;
     mapping(address => mapping(uint8 => Guardian)) public guardians;
     mapping(address => bool) public hasVault;
     
@@ -201,6 +201,7 @@ contract DigitalLegacyVaultV2 {
     // --------------------------------------------------------
 
     constructor(address _oracle, address _zkpVerifier) {
+        require(_oracle != address(0), "Invalid oracle address");
         admin = msg.sender;
         oracle = IOracle(_oracle);
         
@@ -370,7 +371,7 @@ contract DigitalLegacyVaultV2 {
     function submitDeathCertificate(
         address vaultOwner,
         bytes32 certificateHash,
-        bytes calldata proof
+        bytes calldata /* proof */
     ) external onlyBeneficiary(vaultOwner) {
         Vault storage v = vaults[vaultOwner];
         require(
@@ -419,31 +420,7 @@ contract DigitalLegacyVaultV2 {
         require(!v.primaryBeneficiary.isVerified, "Already verified");
 
         if (zkpEnabled && address(zkpVerifier) != address(0)) {
-            // Decode ABI-encoded proof: (uint256[2] pA, uint256[2][2] pB, uint256[2] pC, uint256[5] pubSignals)
-            (
-                uint[2] memory pA,
-                uint[2][2] memory pB,
-                uint[2] memory pC,
-                uint[5] memory pubSignals
-            ) = abi.decode(zkProof, (uint[2], uint[2][2], uint[2], uint[5]));
-
-            // Convert uint256 identityCommitment to bytes32 for the verifier
-            bytes32 identityHash = bytes32(v.primaryBeneficiary.identityCommitment);
-
-            // Call the real ZKP verifier with decoded proof components
-            (bool proofValid, bytes32 claimBinding) = zkpVerifier.verifyIdentityProof(
-                vaultOwner,
-                identityHash,
-                pA,
-                pB,
-                pC,
-                pubSignals
-            );
-
-            emit ZKPVerificationResult(msg.sender, proofValid);
-            require(proofValid, "ZKP verification failed");
-
-            // Store claim binding for audit trail
+            bytes32 claimBinding = _verifyZKProof(vaultOwner, v.primaryBeneficiary.identityCommitment, zkProof);
             v.claimBinding = claimBinding;
         } else {
             // Fallback: address-based verification (V1 compatible)
@@ -452,11 +429,11 @@ contract DigitalLegacyVaultV2 {
 
         v.primaryBeneficiary.isVerified = true;
         v.claimInitiatedAt = block.timestamp;
-        
+
         // Increment nonce for anti-replay (if claim is later reset)
         v.primaryBeneficiary.claimNonce++;
         emit ClaimNonceIncremented(vaultOwner, v.primaryBeneficiary.claimNonce);
-        
+
         emit ClaimInitiated(vaultOwner, msg.sender, v.triggerMethod);
     }
 
@@ -469,6 +446,10 @@ contract DigitalLegacyVaultV2 {
         Vault storage v = vaults[vaultOwner];
         require(v.state == VaultState.Claimable, "Vault not claimable");
         require(v.primaryBeneficiary.isVerified, "Beneficiary not verified");
+        require(
+            block.timestamp >= v.claimInitiatedAt + v.claimCooldown,
+            "Cooldown period not elapsed"
+        );
 
         for (uint8 i = 0; i < v.guardianCount; i++) {
             if (guardians[vaultOwner][i].guardianAddress == msg.sender) {
@@ -524,6 +505,10 @@ contract DigitalLegacyVaultV2 {
             VaultState oldState = v.state;
             v.state = VaultState.Claimable;
             v.triggerMethod = VerificationMethod.EmergencyOverride;
+
+            // Reset guardian confirmations so share release requires fresh confirmations
+            _resetGuardianConfirmations(vaultOwner, v.guardianCount);
+
             emit StateChanged(vaultOwner, oldState, VaultState.Claimable);
             emit EmergencyOverride(vaultOwner, confirmations);
         }
@@ -639,22 +624,45 @@ contract DigitalLegacyVaultV2 {
         bool zkpActive
     ) {
         Vault storage v = vaults[owner];
-        return (
-            v.state,
-            v.lastCheckIn,
-            v.checkInInterval,
-            v.gracePeriod,
-            v.guardianCount,
-            v.requiredGuardians,
-            v.metadata.vaultName,
-            v.metadata.platformCount,
-            zkpEnabled
-        );
+        state = v.state;
+        lastCheckIn = v.lastCheckIn;
+        checkInInterval = v.checkInInterval;
+        gracePeriod = v.gracePeriod;
+        guardianCount = v.guardianCount;
+        requiredGuardians = v.requiredGuardians;
+        vaultName = v.metadata.vaultName;
+        platformCount = v.metadata.platformCount;
+        zkpActive = zkpEnabled;
     }
 
     // --------------------------------------------------------
     // INTERNAL HELPERS
     // --------------------------------------------------------
+
+    function _verifyZKProof(
+        address vaultOwner,
+        uint256 identityCommitment,
+        bytes calldata zkProof
+    ) internal returns (bytes32) {
+        // Decode ABI-encoded proof: (uint256[2] pA, uint256[2][2] pB, uint256[2] pC, uint256[5] pubSignals)
+        (
+            uint[2] memory pA,
+            uint[2][2] memory pB,
+            uint[2] memory pC,
+            uint[5] memory pubSignals
+        ) = abi.decode(zkProof, (uint[2], uint[2][2], uint[2], uint[5]));
+
+        bytes32 identityHash = bytes32(identityCommitment);
+
+        (bool proofValid, bytes32 claimBinding) = zkpVerifier.verifyIdentityProof(
+            vaultOwner, identityHash, pA, pB, pC, pubSignals
+        );
+
+        emit ZKPVerificationResult(msg.sender, proofValid);
+        require(proofValid, "ZKP verification failed");
+
+        return claimBinding;
+    }
 
     function _countConfirmations(address owner) internal view returns (uint8) {
         Vault storage v = vaults[owner];
@@ -665,5 +673,11 @@ contract DigitalLegacyVaultV2 {
             }
         }
         return count;
+    }
+
+    function _resetGuardianConfirmations(address owner, uint8 guardianCount) internal {
+        for (uint8 i = 0; i < guardianCount; i++) {
+            guardians[owner][i].hasConfirmedRelease = false;
+        }
     }
 }

@@ -23,7 +23,6 @@ from pydantic import BaseModel, Field
 from typing import Optional, List, Dict
 from datetime import datetime, timezone
 from enum import Enum
-import hashlib
 import secrets
 
 router = APIRouter(prefix="/api/v2/verification", tags=["verification"])

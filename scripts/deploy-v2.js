@@ -133,10 +133,11 @@ async function main() {
     const routerAddress = process.env.CHAINLINK_ROUTER || "0xC22a79eBA640940ABB6dF0f7982cc119578E11De";
     const donId = process.env.CHAINLINK_DON_ID || "0x66756e2d706f6c79676f6e2d616d6f792d310000000000000000000000000000";
     const subId = process.env.CHAINLINK_SUB_ID || "0";
+    const gasLimit = process.env.CHAINLINK_GAS_LIMIT || 300000;
 
     try {
       const ChainlinkOracle = await hre.ethers.getContractFactory("ChainlinkDeathOracle");
-      const oracle = await ChainlinkOracle.deploy(routerAddress, donId, subId);
+      const oracle = await ChainlinkOracle.deploy(routerAddress, donId, subId, gasLimit);
       await oracle.waitForDeployment();
       oracleAddress = await oracle.getAddress();
       console.log(`   ChainlinkDeathOracle: ${oracleAddress}`);
@@ -158,6 +159,7 @@ async function main() {
       const routerAddress = process.env.CHAINLINK_ROUTER;
       const donId = process.env.CHAINLINK_DON_ID;
       const subId = process.env.CHAINLINK_SUB_ID;
+      const mainnetGasLimit = process.env.CHAINLINK_GAS_LIMIT || 300000;
 
       if (!routerAddress || !donId || !subId) {
         throw new Error(
@@ -167,7 +169,7 @@ async function main() {
       }
 
       const ChainlinkOracle = await hre.ethers.getContractFactory("ChainlinkDeathOracle");
-      const oracle = await ChainlinkOracle.deploy(routerAddress, donId, subId);
+      const oracle = await ChainlinkOracle.deploy(routerAddress, donId, subId, mainnetGasLimit);
       await oracle.waitForDeployment();
       oracleAddress = await oracle.getAddress();
       console.log(`   ChainlinkDeathOracle: ${oracleAddress}`);

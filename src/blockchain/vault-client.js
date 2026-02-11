@@ -22,14 +22,14 @@ import { ethers } from "ethers";
 
 const VAULT_ABI = [
   // Vault Creation
-  "function createVault(bytes32 _ownerDID, uint256 _checkInInterval, uint256 _gracePeriod, uint8 _requiredGuardians) external",
+  "function createVault(bytes32 _ownerDID, uint256 _checkInInterval, uint256 _gracePeriod, uint8 _requiredGuardians, string _vaultName) external",
   
   // Check-In
   "function checkIn() external",
   
   // Guardian Management
   "function addGuardian(address _guardian, bytes32 _shareHash) external",
-  "function setBeneficiary(address _beneficiary, bytes32 _identityHash) external",
+  "function setBeneficiary(address _beneficiary, uint256 _identityCommitment) external",
   
   // Content Archive
   "function addContentArchive(string calldata _cid) external",
@@ -82,7 +82,7 @@ const VAULT_ABI = [
   "event StateChanged(address indexed owner, uint8 oldState, uint8 newState)",
   "event GuardianAdded(address indexed owner, address indexed guardian, uint8 index)",
   "event GuardianConfirmed(address indexed owner, address indexed guardian)",
-  "event BeneficiarySet(address indexed owner, address indexed beneficiary)",
+  "event BeneficiarySet(address indexed owner, address indexed beneficiary, uint256 identityCommitment)",
   "event ClaimInitiated(address indexed owner, address indexed beneficiary, uint8 method)",
   "event SharesReleased(address indexed owner, address indexed beneficiary)",
   "event VaultRevoked(address indexed owner)",
@@ -254,7 +254,7 @@ class VaultClient {
    * @param {number} graceDays - Grace period in days (min 30)
    * @param {number} threshold - Guardian threshold (3-7)
    */
-  async createVault(ownerDID, checkInDays = 90, graceDays = 60, threshold = 3) {
+  async createVault(ownerDID, checkInDays = 90, graceDays = 60, threshold = 3, vaultName = "Digital Legacy Vault") {
     this._requireConnected();
 
     const didHash = ethers.keccak256(ethers.toUtf8Bytes(ownerDID));
@@ -265,7 +265,8 @@ class VaultClient {
       didHash,
       checkInSeconds,
       graceSeconds,
-      threshold
+      threshold,
+      vaultName
     );
 
     const receipt = await tx.wait();
@@ -491,6 +492,8 @@ class VaultClient {
       "CheckIn", "StateChanged", "GuardianAdded", "GuardianConfirmed",
       "BeneficiarySet", "ClaimInitiated", "SharesReleased",
       "VaultRevoked", "ContentArchiveAdded", "DeathCertificateVerified",
+      "OneTimePasscodeIssued", "OneTimePasscodeRedeemed",
+      "LifetimeTokenMinted", "LifetimeTokenRevoked",
     ];
     events.forEach((name) => this.onEvent(name, callback));
   }

@@ -81,13 +81,13 @@ const VAULT_V2_ABI = [
     'function getVaultState(address owner) view returns (uint8)',
     'function getClaimStatus(address owner) view returns (bool beneficiaryVerified, bytes32 claimBinding, uint256 claimInitiatedAt, uint256 cooldownEnds, bool cooldownElapsed)',
     'function getGuardianConfirmations(address owner) view returns (uint8 confirmed, uint8 required)',
-    'function getVaultSummary(address owner) view returns (uint8 state, uint256 lastCheckIn, uint256 checkInInterval, uint256 gracePeriod, uint8 guardianCount, uint8 requiredGuardians, bool beneficiaryVerified, uint8 triggerMethod)',
+    'function getVaultSummary(address owner) view returns (uint8 state, uint256 lastCheckIn, uint256 checkInInterval, uint256 gracePeriod, uint8 guardianCount, uint8 requiredGuardians, string vaultName, uint8 platformCount, bool zkpActive)',
     'function getContentArchives(address owner) view returns (string[])',
 
     // Claim actions
     'function initiateClaim(address vaultOwner, bytes zkProof) external',
     'function confirmShareRelease(address vaultOwner) external',
-    'function submitDeathCertificate(address vaultOwner, bytes32 _certHash) external',
+    'function submitDeathCertificate(address vaultOwner, bytes32 certificateHash, bytes proof) external',
 
     // Phase 3: Digital Passcodes
     'function issueOneTimePasscode(address vaultOwner, bytes32 passcodeHash, string archiveCID, uint256 duration) external returns (uint256 passcodeId)',
@@ -103,9 +103,9 @@ const VAULT_V2_ABI = [
     'function lifetimeTokenCount(address) view returns (uint256)',
 
     // Events
-    'event ZKPVerified(address indexed owner, address indexed beneficiary, bytes32 claimBinding)',
+    'event ZKPVerificationResult(address indexed beneficiary, bool success)',
     'event ClaimInitiated(address indexed owner, address indexed beneficiary, uint8 method)',
-    'event ClaimCooldownStarted(address indexed owner, uint256 cooldownEnds)',
+    'event ClaimNonceIncremented(address indexed owner, uint256 newNonce)',
     'event GuardianConfirmed(address indexed owner, address indexed guardian)',
     'event SharesReleased(address indexed owner, address indexed beneficiary)',
     'event StateChanged(address indexed owner, uint8 oldState, uint8 newState)',
@@ -295,16 +295,16 @@ class ClaimFlowManager {
             console.log('[ClaimFlow] ZKP submission tx:', tx.hash);
             const receipt = await tx.wait();
 
-            // Extract claim binding from event
-            const zkpEvent = receipt.logs.find(log => {
+            // Extract claim binding from ClaimInitiated event
+            const claimEvent = receipt.logs.find(log => {
                 try {
-                    return this.vault.interface.parseLog(log)?.name === 'ZKPVerified';
+                    return this.vault.interface.parseLog(log)?.name === 'ClaimInitiated';
                 } catch { return false; }
             });
 
-            const claimBinding = zkpEvent
-                ? this.vault.interface.parseLog(zkpEvent).args.claimBinding
-                : null;
+            // Retrieve claim binding from on-chain state
+            const claimStatus = await this.vault.getClaimStatus(this.vaultOwner);
+            const claimBinding = claimStatus.claimBinding || null;
 
             this.claimData.proof = proofResult;
             this.claimData.claimBinding = claimBinding;
@@ -724,7 +724,7 @@ class ClaimFlowManager {
             this.vault.getContentArchives(this.vaultOwner),
         ]);
 
-        const stateNames = ['Active', 'Warning', 'Claimable', 'ClaimPending', 'Claimed', 'Revoked'];
+        const stateNames = ['Active', 'Warning', 'Claimable', 'Claimed', 'Revoked'];
         const methodNames = ['DeadManSwitch', 'OracleVerified', 'MultiSigConfirmed', 'EmergencyOverride'];
 
         return {
@@ -736,7 +736,9 @@ class ClaimFlowManager {
                 gracePeriod: Number(vaultSummary.gracePeriod),
                 guardianCount: Number(vaultSummary.guardianCount),
                 requiredGuardians: Number(vaultSummary.requiredGuardians),
-                triggerMethod: methodNames[Number(vaultSummary.triggerMethod)] || 'Unknown',
+                vaultName: vaultSummary.vaultName,
+                platformCount: Number(vaultSummary.platformCount),
+                zkpActive: vaultSummary.zkpActive,
             },
             claim: {
                 beneficiaryVerified: claimStatus.beneficiaryVerified,

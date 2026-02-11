@@ -29,6 +29,8 @@ const STEPS = [
   { id: 4, label: "Initiate Claim", icon: "⚡" },
   { id: 5, label: "Guardian Approvals", icon: "🛡️" },
   { id: 6, label: "Reconstruct", icon: "🔓" },
+  { id: 7, label: "Passcodes", icon: "🎟️" },
+  { id: 8, label: "Lifetime Access", icon: "🏛️" },
 ];
 
 const VAULT_STATES = {
@@ -91,7 +93,26 @@ export default function BeneficiaryClaimFlow() {
   // Reconstruction
   const [shares, setShares] = useState([]);
   const [reconstructedCredentials, setReconstructedCredentials] = useState(null);
-  
+
+  // Phase 3: Digital Passcodes
+  const [passcodes, setPasscodes] = useState([]);
+  const [selectedArchive, setSelectedArchive] = useState("");
+  const [passcodeDuration, setPasscodeDuration] = useState("48");
+  const [passcodeStatus, setPasscodeStatus] = useState("idle");
+  const [redeemPasscodeId, setRedeemPasscodeId] = useState("");
+  const [redeemNonce, setRedeemNonce] = useState("");
+
+  // Phase 3: Lifetime Access Tokens
+  const [lifetimeTokens, setLifetimeTokens] = useState([]);
+  const [tokenHolder, setTokenHolder] = useState("");
+  const [tokenArchives, setTokenArchives] = useState("");
+  const [tokenPolicyDesc, setTokenPolicyDesc] = useState("");
+  const [tokenRevokeAfterDays, setTokenRevokeAfterDays] = useState("0");
+  const [lifetimeStatus, setLifetimeStatus] = useState("idle");
+  const [accessCheckAddress, setAccessCheckAddress] = useState("");
+  const [accessCheckCID, setAccessCheckCID] = useState("");
+  const [accessCheckResult, setAccessCheckResult] = useState(null);
+
   // Event log
   const [events, setEvents] = useState([]);
   const logRef = useRef(null);
@@ -375,6 +396,8 @@ export default function BeneficiaryClaimFlow() {
           {currentStep === 4 && renderStep4()}
           {currentStep === 5 && renderStep5()}
           {currentStep === 6 && renderStep6()}
+          {currentStep === 7 && renderStep7()}
+          {currentStep === 8 && renderStep8()}
         </div>
 
         {/* Right: Event Log */}
@@ -404,7 +427,7 @@ export default function BeneficiaryClaimFlow() {
   // ============================================================
 
   function getMaxStep() {
-    if (reconstructedCredentials) return 6;
+    if (reconstructedCredentials) return 8;
     if (guardianConfirmations >= requiredConfirmations) return 6;
     if (claimStatus === "confirmed") return 5;
     if (zkpStatus === "verified") return 4;
@@ -716,8 +739,467 @@ export default function BeneficiaryClaimFlow() {
                 Recommendation: Change passwords immediately after accessing each account to secure them under your control.
               </p>
             </div>
+            <button style={styles.buttonPrimary} onClick={() => setCurrentStep(7)}>
+              Manage Digital Passcodes →
+            </button>
           </div>
         )}
+      </div>
+    );
+  }
+
+  // ============================================================
+  // STEP 7: ONE-TIME PASSCODE ISSUANCE & REDEMPTION
+  // ============================================================
+
+  async function issuePasscode() {
+    if (!selectedArchive) {
+      addEvent("Please select an archive CID", "error");
+      return;
+    }
+
+    setPasscodeStatus("issuing");
+    addEvent("Step 7: Issuing one-time passcode...", "info");
+    addEvent("  Generating 256-bit random nonce (client-side)...", "info");
+    await simulateDelay(800);
+
+    const mockNonce = "0x" + Array.from({ length: 64 }, () =>
+      "0123456789abcdef"[Math.floor(Math.random() * 16)]
+    ).join("");
+
+    addEvent(`  Nonce: ${mockNonce.slice(0, 18)}... (KEEP SECRET)`, "warning");
+    addEvent("  Computing keccak256(nonce) for on-chain hash...", "info");
+    await simulateDelay(600);
+
+    addEvent("  Submitting passcode hash to DigitalLegacyVaultV2...", "info");
+    addEvent(`  Archive: ${selectedArchive}`, "info");
+    addEvent(`  Duration: ${passcodeDuration} hours`, "info");
+    await simulateDelay(1500);
+
+    const mockTxHash = "0x" + Array.from({ length: 64 }, () =>
+      "0123456789abcdef"[Math.floor(Math.random() * 16)]
+    ).join("");
+
+    const expiresAt = new Date(Date.now() + parseInt(passcodeDuration) * 3600000);
+    const newPasscode = {
+      id: passcodes.length,
+      archiveCID: selectedArchive,
+      nonce: mockNonce,
+      issuedAt: new Date(),
+      expiresAt,
+      isRedeemed: false,
+      txHash: mockTxHash,
+    };
+
+    setPasscodes([...passcodes, newPasscode]);
+    setPasscodeStatus("issued");
+
+    addEvent(`Passcode #${newPasscode.id} ISSUED (tx: ${mockTxHash.slice(0, 18)}...)`, "success");
+    addEvent(`  Expires: ${expiresAt.toLocaleString()}`, "info");
+    addEvent("  Save the nonce securely - it cannot be recovered.", "warning");
+  }
+
+  async function redeemPasscode() {
+    if (!redeemPasscodeId && redeemPasscodeId !== 0) {
+      addEvent("Please enter a passcode ID", "error");
+      return;
+    }
+    if (!redeemNonce) {
+      addEvent("Please enter the nonce", "error");
+      return;
+    }
+
+    setPasscodeStatus("redeeming");
+    addEvent(`Step 7b: Redeeming passcode #${redeemPasscodeId}...`, "info");
+
+    addEvent("  Signing redemption message with wallet...", "info");
+    addEvent("  Message: keccak256(vaultOwner, passcodeId, nonce)", "info");
+    await simulateDelay(1000);
+    addEvent("  Wallet signature obtained.", "success");
+
+    addEvent("  Submitting nonce to contract for verification...", "info");
+    addEvent("  Contract: keccak256(nonce) == stored passcodeHash?", "info");
+    await simulateDelay(1500);
+
+    // Update local state
+    const updatedPasscodes = passcodes.map(p =>
+      p.id === parseInt(redeemPasscodeId) ? { ...p, isRedeemed: true } : p
+    );
+    setPasscodes(updatedPasscodes);
+    setPasscodeStatus("redeemed");
+
+    const redeemed = passcodes.find(p => p.id === parseInt(redeemPasscodeId));
+    addEvent(`Passcode #${redeemPasscodeId} REDEEMED`, "success");
+    addEvent(`  Archive unlocked: ${redeemed?.archiveCID || "unknown"}`, "success");
+    addEvent("  You can now decrypt this archive or generate a temporary download link.", "info");
+  }
+
+  function renderStep7() {
+    const archiveOptions = [
+      "QmPhotoAlbum2024_encrypted",
+      "QmFamilyVideos_encrypted",
+      "QmLegalDocuments_encrypted",
+      "QmSocialMediaArchive_encrypted",
+    ];
+
+    return (
+      <div style={styles.stepContent}>
+        <h2 style={styles.stepTitle}>Step 7: One-Time Digital Passcodes</h2>
+        <p style={styles.text}>
+          Issue one-time passcodes to decrypt specific IPFS archives. Each passcode can be used once and expires after the set duration.
+          The passcode nonce is generated client-side and only the hash is stored on-chain.
+        </p>
+
+        <div style={styles.privacyBanner}>
+          🔒 The passcode nonce never leaves your device until redemption. On-chain: only keccak256(nonce) is stored.
+        </div>
+
+        {/* Issue New Passcode */}
+        <div style={{ ...styles.vaultCard, marginBottom: 16 }}>
+          <h4 style={{ color: "#6c5ce7", margin: "0 0 12px 0" }}>Issue New Passcode</h4>
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>Archive CID</label>
+            <select
+              style={styles.input}
+              value={selectedArchive}
+              onChange={(e) => setSelectedArchive(e.target.value)}
+            >
+              <option value="">Select an archive...</option>
+              {archiveOptions.map((cid, i) => (
+                <option key={i} value={cid}>{cid}</option>
+              ))}
+            </select>
+          </div>
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>Duration (hours)</label>
+            <input
+              style={styles.input}
+              type="number"
+              min="1"
+              max="720"
+              value={passcodeDuration}
+              onChange={(e) => setPasscodeDuration(e.target.value)}
+            />
+          </div>
+          <button
+            style={styles.buttonPrimary}
+            onClick={issuePasscode}
+            disabled={passcodeStatus === "issuing"}
+          >
+            {passcodeStatus === "issuing" ? "Issuing..." : "Issue Passcode"}
+          </button>
+        </div>
+
+        {/* Active Passcodes */}
+        {passcodes.length > 0 && (
+          <div style={{ ...styles.vaultCard, marginBottom: 16 }}>
+            <h4 style={{ color: "#6c5ce7", margin: "0 0 12px 0" }}>Issued Passcodes</h4>
+            {passcodes.map((p) => (
+              <div key={p.id} style={{
+                ...styles.credentialRow,
+                borderBottomColor: "#1a3a1a",
+              }}>
+                <span style={{ fontSize: 12, fontWeight: 600 }}>#{p.id}</span>
+                <span style={{ fontSize: 11, color: "#6c5ce7" }}>{p.archiveCID.slice(0, 20)}...</span>
+                <span style={{
+                  fontSize: 11,
+                  color: p.isRedeemed ? "#27ae60" : new Date() > p.expiresAt ? "#e74c3c" : "#f39c12",
+                }}>
+                  {p.isRedeemed ? "Redeemed" : new Date() > p.expiresAt ? "Expired" : "Active"}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Redeem Passcode */}
+        <div style={styles.vaultCard}>
+          <h4 style={{ color: "#6c5ce7", margin: "0 0 12px 0" }}>Redeem Passcode</h4>
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>Passcode ID</label>
+            <input
+              style={styles.input}
+              type="number"
+              placeholder="e.g., 0"
+              value={redeemPasscodeId}
+              onChange={(e) => setRedeemPasscodeId(e.target.value)}
+            />
+          </div>
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>Nonce (from issuance)</label>
+            <input
+              style={styles.input}
+              type="password"
+              placeholder="0x..."
+              value={redeemNonce}
+              onChange={(e) => setRedeemNonce(e.target.value)}
+            />
+            <p style={styles.hint}>Enter the nonce you received when the passcode was issued.</p>
+          </div>
+          <button
+            style={styles.buttonPrimary}
+            onClick={redeemPasscode}
+            disabled={passcodeStatus === "redeeming"}
+          >
+            {passcodeStatus === "redeeming" ? "Redeeming..." : "Redeem & Unlock Archive"}
+          </button>
+        </div>
+
+        <button style={{ ...styles.buttonPrimary, marginTop: 16 }} onClick={() => setCurrentStep(8)}>
+          Manage Lifetime Access Tokens →
+        </button>
+      </div>
+    );
+  }
+
+  // ============================================================
+  // STEP 8: LIFETIME ACCESS TOKENS
+  // ============================================================
+
+  async function mintLifetimeToken() {
+    if (!tokenHolder || !tokenArchives) {
+      addEvent("Please fill holder address and archive CIDs", "error");
+      return;
+    }
+
+    setLifetimeStatus("minting");
+    addEvent("Step 8: Minting lifetime access token (soulbound)...", "info");
+    addEvent(`  Holder: ${tokenHolder.slice(0, 10)}...`, "info");
+    addEvent(`  Archives: ${tokenArchives}`, "info");
+    addEvent(`  Policy: ${tokenPolicyDesc || "(no description)"}`, "info");
+
+    const revokeDays = parseInt(tokenRevokeAfterDays);
+    if (revokeDays > 0) {
+      addEvent(`  Auto-revoke: ${revokeDays} days from now`, "info");
+    } else {
+      addEvent("  Auto-revoke: NONE (permanent until manually revoked)", "info");
+    }
+
+    await simulateDelay(800);
+    addEvent("  Computing policy hash (keccak256 of policy descriptor)...", "info");
+    await simulateDelay(600);
+
+    addEvent("  Submitting to DigitalLegacyVaultV2.mintLifetimeAccessToken()...", "info");
+    addEvent("  Token type: Soulbound (non-transferable, UCC Article 12 compliant)", "info");
+    await simulateDelay(1500);
+
+    const mockTxHash = "0x" + Array.from({ length: 64 }, () =>
+      "0123456789abcdef"[Math.floor(Math.random() * 16)]
+    ).join("");
+
+    const newToken = {
+      tokenId: lifetimeTokens.length,
+      holder: tokenHolder,
+      archiveCIDs: tokenArchives.split(",").map(s => s.trim()),
+      policyDesc: tokenPolicyDesc,
+      issuedAt: new Date(),
+      isActive: true,
+      revokeAfter: revokeDays > 0 ? new Date(Date.now() + revokeDays * 86400000) : null,
+      txHash: mockTxHash,
+    };
+
+    setLifetimeTokens([...lifetimeTokens, newToken]);
+    setLifetimeStatus("minted");
+
+    addEvent(`Lifetime token #${newToken.tokenId} MINTED (tx: ${mockTxHash.slice(0, 18)}...)`, "success");
+    addEvent(`  Soulbound to: ${tokenHolder}`, "success");
+    addEvent("  This token grants ongoing decryption rights to the specified archives.", "info");
+
+    // Reset form
+    setTokenHolder("");
+    setTokenArchives("");
+    setTokenPolicyDesc("");
+    setTokenRevokeAfterDays("0");
+  }
+
+  async function revokeToken(tokenId) {
+    addEvent(`Revoking lifetime token #${tokenId}...`, "info");
+    await simulateDelay(1000);
+
+    setLifetimeTokens(lifetimeTokens.map(t =>
+      t.tokenId === tokenId ? { ...t, isActive: false } : t
+    ));
+
+    addEvent(`Token #${tokenId} REVOKED. Access rights terminated.`, "success");
+  }
+
+  async function checkAccess() {
+    if (!accessCheckAddress || !accessCheckCID) {
+      addEvent("Please enter address and archive CID to check", "error");
+      return;
+    }
+
+    addEvent(`Checking lifetime access: ${accessCheckAddress.slice(0, 10)}... -> ${accessCheckCID.slice(0, 20)}...`, "info");
+    await simulateDelay(800);
+
+    // Simulate access check
+    const matchingToken = lifetimeTokens.find(t =>
+      t.isActive && t.holder === accessCheckAddress &&
+      t.archiveCIDs.some(cid => cid === accessCheckCID)
+    );
+
+    if (matchingToken) {
+      setAccessCheckResult({ hasAccess: true, tokenId: matchingToken.tokenId });
+      addEvent(`ACCESS GRANTED via token #${matchingToken.tokenId}`, "success");
+    } else {
+      setAccessCheckResult({ hasAccess: false, tokenId: null });
+      addEvent("ACCESS DENIED. No active lifetime token found for this archive.", "error");
+    }
+  }
+
+  function renderStep8() {
+    return (
+      <div style={styles.stepContent}>
+        <h2 style={styles.stepTitle}>Step 8: Lifetime Access Tokens</h2>
+        <p style={styles.text}>
+          Mint soulbound (non-transferable) access tokens that grant ongoing view/decryption rights
+          to specific IPFS archives. These tokens are compliant with UCC Article 12 as controllable
+          electronic records. Tokens can be revoked by the vault owner or via guardian multi-sig.
+        </p>
+
+        <div style={styles.privacyBanner}>
+          🏛️ Lifetime tokens are soulbound to a specific wallet address. They cannot be transferred, only revoked. Policy hashes are stored on-chain for legal auditability.
+        </div>
+
+        {/* Mint New Token */}
+        <div style={{ ...styles.vaultCard, marginBottom: 16 }}>
+          <h4 style={{ color: "#6c5ce7", margin: "0 0 12px 0" }}>Mint Access Token</h4>
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>Holder Address (soulbound to)</label>
+            <input
+              style={styles.input}
+              placeholder="0x... (beneficiary or family member)"
+              value={tokenHolder}
+              onChange={(e) => setTokenHolder(e.target.value)}
+            />
+          </div>
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>Archive CIDs (comma-separated)</label>
+            <input
+              style={styles.input}
+              placeholder="QmPhotoAlbum2024, QmFamilyVideos"
+              value={tokenArchives}
+              onChange={(e) => setTokenArchives(e.target.value)}
+            />
+          </div>
+          <div style={styles.formGrid}>
+            <div style={styles.inputGroup}>
+              <label style={styles.label}>Policy Description (optional)</label>
+              <input
+                style={styles.input}
+                placeholder="e.g., Family photo viewing rights"
+                value={tokenPolicyDesc}
+                onChange={(e) => setTokenPolicyDesc(e.target.value)}
+              />
+            </div>
+            <div style={styles.inputGroup}>
+              <label style={styles.label}>Auto-Revoke After (days, 0=never)</label>
+              <input
+                style={styles.input}
+                type="number"
+                min="0"
+                value={tokenRevokeAfterDays}
+                onChange={(e) => setTokenRevokeAfterDays(e.target.value)}
+              />
+            </div>
+          </div>
+          <button
+            style={styles.buttonPrimary}
+            onClick={mintLifetimeToken}
+            disabled={lifetimeStatus === "minting"}
+          >
+            {lifetimeStatus === "minting" ? "Minting..." : "Mint Soulbound Token"}
+          </button>
+        </div>
+
+        {/* Active Tokens */}
+        {lifetimeTokens.length > 0 && (
+          <div style={{ ...styles.vaultCard, marginBottom: 16 }}>
+            <h4 style={{ color: "#6c5ce7", margin: "0 0 12px 0" }}>Lifetime Tokens</h4>
+            {lifetimeTokens.map((t) => (
+              <div key={t.tokenId} style={{
+                ...styles.guardianCard,
+                borderColor: t.isActive ? "#27ae60" : "#e74c3c",
+                marginBottom: 8,
+              }}>
+                <div style={styles.guardianHeader}>
+                  <span style={styles.guardianLabel}>Token #{t.tokenId}</span>
+                  <span style={{
+                    ...styles.guardianStatus,
+                    color: t.isActive ? "#27ae60" : "#e74c3c",
+                  }}>
+                    {t.isActive ? "Active" : "Revoked"}
+                  </span>
+                </div>
+                <div style={{ fontSize: 11, color: "#aaa", marginBottom: 4 }}>
+                  Holder: {t.holder.slice(0, 10)}...{t.holder.slice(-4)}
+                </div>
+                <div style={{ fontSize: 11, color: "#6c5ce7", marginBottom: 4 }}>
+                  Archives: {t.archiveCIDs.join(", ")}
+                </div>
+                {t.revokeAfter && (
+                  <div style={{ fontSize: 10, color: "#f39c12" }}>
+                    Auto-revoke: {t.revokeAfter.toLocaleString()}
+                  </div>
+                )}
+                {t.isActive && (
+                  <button style={styles.buttonSmall} onClick={() => revokeToken(t.tokenId)}>
+                    Revoke Token
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Access Verification */}
+        <div style={styles.vaultCard}>
+          <h4 style={{ color: "#6c5ce7", margin: "0 0 12px 0" }}>Verify Access Rights</h4>
+          <p style={{ fontSize: 11, color: "#888", marginBottom: 8 }}>
+            Check if an address has active lifetime access to a specific archive.
+          </p>
+          <div style={styles.formGrid}>
+            <div style={styles.inputGroup}>
+              <label style={styles.label}>Holder Address</label>
+              <input
+                style={styles.input}
+                placeholder="0x..."
+                value={accessCheckAddress}
+                onChange={(e) => setAccessCheckAddress(e.target.value)}
+              />
+            </div>
+            <div style={styles.inputGroup}>
+              <label style={styles.label}>Archive CID</label>
+              <input
+                style={styles.input}
+                placeholder="QmPhotoAlbum2024"
+                value={accessCheckCID}
+                onChange={(e) => setAccessCheckCID(e.target.value)}
+              />
+            </div>
+          </div>
+          <button style={styles.buttonPrimary} onClick={checkAccess}>
+            Verify Access
+          </button>
+          {accessCheckResult !== null && (
+            <div style={{
+              ...styles.proofCard,
+              borderColor: accessCheckResult.hasAccess ? "#27ae60" : "#e74c3c",
+              marginTop: 12,
+            }}>
+              {accessCheckResult.hasAccess ? (
+                <div>
+                  <h4 style={{ color: "#27ae60", margin: 0 }}>ACCESS GRANTED</h4>
+                  <p style={{ fontSize: 11, color: "#aaa", margin: "4px 0 0 0" }}>
+                    Via lifetime token #{accessCheckResult.tokenId}
+                  </p>
+                </div>
+              ) : (
+                <h4 style={{ color: "#e74c3c", margin: 0 }}>ACCESS DENIED</h4>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     );
   }

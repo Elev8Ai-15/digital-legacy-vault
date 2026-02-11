@@ -3,10 +3,10 @@ pragma solidity ^0.8.20;
 
 /**
  * DigitalLegacyVaultV2.sol
- * 
+ *
  * Digital Legacy Vault - Phase 2: Verification-Integrated Contract
  * Built by Brad Powell / Elev8.AI Consulting & Integration
- * 
+ *
  * Upgrades from V1:
  *   - Real ZKP verification via Groth16Verifier (replaces placeholder bytes check)
  *   - Claim nonce system (prevents proof replay attacks)
@@ -14,7 +14,17 @@ pragma solidity ^0.8.20;
  *   - Oracle upgrade path (MockOracle → ChainlinkDeathOracle)
  *   - Emergency guardian override (for edge cases)
  *   - Vault metadata for UI rendering
- * 
+ *
+ * Phase 3 — Digital Passcodes:
+ *   - One-time passcodes: After ZKP + oracle + guardian threshold, contract
+ *     issues a signed nonce / one-time claim token. Beneficiary signs with
+ *     heir wallet and uses once to decrypt a share or generate a temporary
+ *     download link for archives.
+ *   - Lifetime access tokens: Optional soulbound / revocable tokens (as
+ *     controllable electronic records under UCC Article 12) granting ongoing
+ *     view/decryption rights to specific IPFS archives. Revocable via
+ *     multi-sig or time-lock.
+ *
  * Deployment: Polygon mainnet / Amoy testnet
  * Gas optimized: ~200K for claim with ZKP verification
  */
@@ -86,6 +96,27 @@ contract DigitalLegacyVaultV2 {
         uint8 platformCount;            // Number of platforms archived
     }
 
+    // ---- Phase 3: Digital Passcodes ----
+
+    struct OneTimePasscode {
+        bytes32 passcodeHash;           // keccak256(nonce) — beneficiary holds the nonce
+        address issuedTo;               // Beneficiary wallet
+        uint256 issuedAt;
+        uint256 expiresAt;              // Passcode validity window
+        bool isRedeemed;                // One-time use flag
+        string archiveCID;              // Specific IPFS archive this passcode unlocks
+    }
+
+    struct LifetimeAccessToken {
+        uint256 tokenId;                // Unique token ID (auto-increment)
+        address holder;                 // Soulbound to this address
+        uint256 issuedAt;
+        string[] archiveCIDs;           // IPFS archives this token grants access to
+        bool isActive;                  // Can be revoked
+        uint256 revokeAfter;            // Auto-revoke timestamp (0 = no auto-revoke)
+        bytes32 policyHash;             // Hash of access policy (UCC Article 12 reference)
+    }
+
     struct Vault {
         address owner;
         bytes32 ownerDID;
@@ -123,10 +154,25 @@ contract DigitalLegacyVaultV2 {
     IOracle public oracle;
     IZKPVerifier public zkpVerifier;
     address public admin;
-    
+
     // ZKP verification enabled flag (can be toggled during migration)
     bool public zkpEnabled;
-    
+
+    // ---- Phase 3: Digital Passcode State ----
+    // vaultOwner => passcodeId => OneTimePasscode
+    mapping(address => mapping(uint256 => OneTimePasscode)) public passcodes;
+    mapping(address => uint256) public passcodeCount;
+
+    // vaultOwner => tokenId => LifetimeAccessToken
+    mapping(address => mapping(uint256 => LifetimeAccessToken)) private _lifetimeTokens;
+    mapping(address => uint256) public lifetimeTokenCount;
+
+    // Fast lookup: vaultOwner => holder => list of active tokenIds
+    mapping(address => mapping(address => uint256[])) private _holderTokenIds;
+
+    // Passcode nonce tracking for wallet-signed redemption
+    mapping(address => mapping(uint256 => bool)) private _passcodeNonces;
+
     // Constants
     uint256 public constant MIN_CHECK_IN_INTERVAL = 30 days;
     uint256 public constant MAX_CHECK_IN_INTERVAL = 365 days;
@@ -135,6 +181,9 @@ contract DigitalLegacyVaultV2 {
     uint256 public constant MIN_GUARDIANS = 3;
     uint256 public constant CLAIM_COOLDOWN = 14 days;
     uint256 public constant EMERGENCY_GUARDIAN_THRESHOLD = 5; // 5 of 7 for emergency
+    uint256 public constant DEFAULT_PASSCODE_DURATION = 48 hours;
+    uint256 public constant MAX_PASSCODE_DURATION = 30 days;
+    uint256 public constant MAX_LIFETIME_TOKENS_PER_VAULT = 50;
 
     // --------------------------------------------------------
     // EVENTS
@@ -156,6 +205,37 @@ contract DigitalLegacyVaultV2 {
     event OracleUpdated(address newOracle);
     event ZKPVerifierUpdated(address newVerifier);
     event EmergencyOverride(address indexed owner, uint8 guardianConfirmations);
+
+    // Phase 3: Digital Passcode Events
+    event OneTimePasscodeIssued(
+        address indexed vaultOwner,
+        address indexed beneficiary,
+        uint256 passcodeId,
+        string archiveCID,
+        uint256 expiresAt
+    );
+    event OneTimePasscodeRedeemed(
+        address indexed vaultOwner,
+        address indexed beneficiary,
+        uint256 passcodeId,
+        string archiveCID
+    );
+    event LifetimeTokenMinted(
+        address indexed vaultOwner,
+        address indexed holder,
+        uint256 tokenId,
+        bytes32 policyHash
+    );
+    event LifetimeTokenRevoked(
+        address indexed vaultOwner,
+        uint256 tokenId,
+        address indexed holder
+    );
+    event LifetimeTokenPolicyUpdated(
+        address indexed vaultOwner,
+        uint256 tokenId,
+        bytes32 newPolicyHash
+    );
 
     // --------------------------------------------------------
     // MODIFIERS
@@ -542,6 +622,316 @@ contract DigitalLegacyVaultV2 {
         
         emit StateChanged(msg.sender, oldState, VaultState.Revoked);
         emit VaultRevoked(msg.sender);
+    }
+
+    // --------------------------------------------------------
+    // PHASE 3: ONE-TIME PASSCODES
+    // --------------------------------------------------------
+
+    /**
+     * @notice Issue a one-time passcode to the verified beneficiary.
+     *         Called after successful ZKP + oracle + guardian threshold.
+     * @param vaultOwner   Vault owner address
+     * @param passcodeHash keccak256 of a nonce generated client-side
+     * @param archiveCID   IPFS CID of the archive this passcode unlocks
+     * @param duration     How long the passcode is valid (0 = default 48h)
+     * @return passcodeId  The issued passcode ID
+     */
+    function issueOneTimePasscode(
+        address vaultOwner,
+        bytes32 passcodeHash,
+        string calldata archiveCID,
+        uint256 duration
+    ) external onlyBeneficiary(vaultOwner) returns (uint256 passcodeId) {
+        Vault storage v = vaults[vaultOwner];
+        require(
+            v.state == VaultState.Claimed || v.primaryBeneficiary.isVerified,
+            "Beneficiary not verified or vault not claimed"
+        );
+        require(passcodeHash != bytes32(0), "Invalid passcode hash");
+        require(bytes(archiveCID).length > 0, "Empty archive CID");
+
+        uint256 dur = duration > 0 ? duration : DEFAULT_PASSCODE_DURATION;
+        require(dur <= MAX_PASSCODE_DURATION, "Duration exceeds max");
+
+        passcodeId = passcodeCount[vaultOwner];
+        passcodes[vaultOwner][passcodeId] = OneTimePasscode({
+            passcodeHash: passcodeHash,
+            issuedTo: msg.sender,
+            issuedAt: block.timestamp,
+            expiresAt: block.timestamp + dur,
+            isRedeemed: false,
+            archiveCID: archiveCID
+        });
+        passcodeCount[vaultOwner]++;
+
+        emit OneTimePasscodeIssued(
+            vaultOwner,
+            msg.sender,
+            passcodeId,
+            archiveCID,
+            block.timestamp + dur
+        );
+    }
+
+    /**
+     * @notice Redeem a one-time passcode by providing the original nonce.
+     *         Beneficiary proves possession of the nonce by submitting it;
+     *         the contract verifies keccak256(nonce) matches the stored hash.
+     * @param vaultOwner Vault owner address
+     * @param passcodeId The passcode to redeem
+     * @param nonce      The original nonce (preimage of passcodeHash)
+     * @return archiveCID The IPFS CID unlocked by this passcode
+     */
+    function redeemOneTimePasscode(
+        address vaultOwner,
+        uint256 passcodeId,
+        bytes32 nonce
+    ) external onlyBeneficiary(vaultOwner) returns (string memory archiveCID) {
+        require(passcodeId < passcodeCount[vaultOwner], "Invalid passcode ID");
+
+        OneTimePasscode storage p = passcodes[vaultOwner][passcodeId];
+        require(!p.isRedeemed, "Passcode already redeemed");
+        require(block.timestamp <= p.expiresAt, "Passcode expired");
+        require(p.issuedTo == msg.sender, "Not passcode holder");
+        require(keccak256(abi.encodePacked(nonce)) == p.passcodeHash, "Invalid nonce");
+
+        p.isRedeemed = true;
+
+        emit OneTimePasscodeRedeemed(vaultOwner, msg.sender, passcodeId, p.archiveCID);
+        return p.archiveCID;
+    }
+
+    /**
+     * @notice Get core details of a one-time passcode
+     */
+    function getPasscodeInfo(
+        address vaultOwner,
+        uint256 passcodeId
+    ) external view returns (
+        address issuedTo,
+        uint256 issuedAt,
+        uint256 expiresAt,
+        bool isRedeemed,
+        bool isExpired
+    ) {
+        require(passcodeId < passcodeCount[vaultOwner], "Invalid passcode ID");
+        OneTimePasscode storage p = passcodes[vaultOwner][passcodeId];
+        return (
+            p.issuedTo,
+            p.issuedAt,
+            p.expiresAt,
+            p.isRedeemed,
+            block.timestamp > p.expiresAt
+        );
+    }
+
+    /**
+     * @notice Get the archive CID for a one-time passcode
+     */
+    function getPasscodeArchive(
+        address vaultOwner,
+        uint256 passcodeId
+    ) external view returns (string memory) {
+        require(passcodeId < passcodeCount[vaultOwner], "Invalid passcode ID");
+        return passcodes[vaultOwner][passcodeId].archiveCID;
+    }
+
+    // --------------------------------------------------------
+    // PHASE 3: LIFETIME ACCESS TOKENS (Soulbound / Revocable)
+    // --------------------------------------------------------
+
+    /**
+     * @notice Mint a lifetime (soulbound) access token granting ongoing access
+     *         to specific IPFS archives. Only vault owner can mint.
+     * @param holder       Address to bind this token to (soulbound)
+     * @param archiveCIDs  IPFS CIDs this token grants access to
+     * @param policyHash   Hash of the access policy document
+     * @param revokeAfter  Timestamp for auto-revocation (0 = no auto-revoke)
+     * @return tokenId     The minted token ID
+     */
+    function mintLifetimeAccessToken(
+        address holder,
+        string[] calldata archiveCIDs,
+        bytes32 policyHash,
+        uint256 revokeAfter
+    ) external onlyVaultOwner returns (uint256 tokenId) {
+        require(holder != address(0), "Invalid holder");
+        require(archiveCIDs.length > 0, "No archives specified");
+        require(
+            lifetimeTokenCount[msg.sender] < MAX_LIFETIME_TOKENS_PER_VAULT,
+            "Max tokens reached"
+        );
+        if (revokeAfter > 0) {
+            require(revokeAfter > block.timestamp, "Revoke time must be in future");
+        }
+
+        tokenId = lifetimeTokenCount[msg.sender];
+
+        LifetimeAccessToken storage token = _lifetimeTokens[msg.sender][tokenId];
+        token.tokenId = tokenId;
+        token.holder = holder;
+        token.issuedAt = block.timestamp;
+        token.isActive = true;
+        token.revokeAfter = revokeAfter;
+        token.policyHash = policyHash;
+
+        for (uint256 i = 0; i < archiveCIDs.length; i++) {
+            token.archiveCIDs.push(archiveCIDs[i]);
+        }
+
+        _holderTokenIds[msg.sender][holder].push(tokenId);
+        lifetimeTokenCount[msg.sender]++;
+
+        emit LifetimeTokenMinted(msg.sender, holder, tokenId, policyHash);
+    }
+
+    /**
+     * @notice Revoke a lifetime access token. Can be called by vault owner
+     *         or by any guardian if guardians reach threshold (multi-sig revoke).
+     * @param tokenId Token to revoke
+     */
+    function revokeLifetimeToken(uint256 tokenId) external {
+        // Owner can always revoke their own tokens
+        require(hasVault[msg.sender], "No vault found");
+        require(tokenId < lifetimeTokenCount[msg.sender], "Invalid token ID");
+
+        LifetimeAccessToken storage token = _lifetimeTokens[msg.sender][tokenId];
+        require(token.isActive, "Token already revoked");
+
+        token.isActive = false;
+        emit LifetimeTokenRevoked(msg.sender, tokenId, token.holder);
+    }
+
+    /**
+     * @notice Guardian-initiated revocation of a lifetime token.
+     *         Requires guardian threshold confirmations.
+     * @param vaultOwner Vault owner address
+     * @param tokenId    Token to revoke
+     */
+    function guardianRevokeLifetimeToken(
+        address vaultOwner,
+        uint256 tokenId
+    ) external onlyGuardian(vaultOwner) {
+        require(tokenId < lifetimeTokenCount[vaultOwner], "Invalid token ID");
+        LifetimeAccessToken storage token = _lifetimeTokens[vaultOwner][tokenId];
+        require(token.isActive, "Token already revoked");
+
+        // Check if guardian threshold is met for revocation
+        uint8 confirmations = _countConfirmations(vaultOwner);
+        require(
+            confirmations >= vaults[vaultOwner].requiredGuardians,
+            "Insufficient guardian confirmations for revocation"
+        );
+
+        token.isActive = false;
+        emit LifetimeTokenRevoked(vaultOwner, tokenId, token.holder);
+    }
+
+    /**
+     * @notice Update the access policy for a lifetime token (owner only).
+     * @param tokenId       Token to update
+     * @param newPolicyHash New policy hash
+     */
+    function updateLifetimeTokenPolicy(
+        uint256 tokenId,
+        bytes32 newPolicyHash
+    ) external onlyVaultOwner {
+        require(tokenId < lifetimeTokenCount[msg.sender], "Invalid token ID");
+        LifetimeAccessToken storage token = _lifetimeTokens[msg.sender][tokenId];
+        require(token.isActive, "Token revoked");
+
+        token.policyHash = newPolicyHash;
+        emit LifetimeTokenPolicyUpdated(msg.sender, tokenId, newPolicyHash);
+    }
+
+    /**
+     * @notice Verify if an address has active lifetime access to a specific archive.
+     *         Used by IPFS gateways / decryption services to check access rights.
+     * @param vaultOwner  Vault that owns the archive
+     * @param holder      Address to check
+     * @param archiveCID  IPFS CID to check access for
+     * @return hasAccess  Whether the holder has active access
+     * @return tokenId    The token granting access (0 if none)
+     */
+    function verifyLifetimeAccess(
+        address vaultOwner,
+        address holder,
+        string calldata archiveCID
+    ) external view returns (bool hasAccess, uint256 tokenId) {
+        uint256[] storage tokenIds = _holderTokenIds[vaultOwner][holder];
+
+        for (uint256 i = 0; i < tokenIds.length; i++) {
+            LifetimeAccessToken storage token = _lifetimeTokens[vaultOwner][tokenIds[i]];
+
+            if (!token.isActive) continue;
+            if (token.revokeAfter > 0 && block.timestamp > token.revokeAfter) continue;
+
+            for (uint256 j = 0; j < token.archiveCIDs.length; j++) {
+                if (keccak256(bytes(token.archiveCIDs[j])) == keccak256(bytes(archiveCID))) {
+                    return (true, tokenIds[i]);
+                }
+            }
+        }
+
+        return (false, 0);
+    }
+
+    /**
+     * @notice Get core lifetime access token details
+     */
+    function getLifetimeTokenInfo(
+        address vaultOwner,
+        uint256 tokenId
+    ) external view returns (
+        address holder,
+        uint256 issuedAt,
+        bool isActive,
+        uint256 revokeAfter,
+        bytes32 policyHash
+    ) {
+        require(tokenId < lifetimeTokenCount[vaultOwner], "Invalid token ID");
+        LifetimeAccessToken storage token = _lifetimeTokens[vaultOwner][tokenId];
+        return (
+            token.holder,
+            token.issuedAt,
+            token.isActive,
+            token.revokeAfter,
+            token.policyHash
+        );
+    }
+
+    /**
+     * @notice Get the archive CIDs for a lifetime token
+     */
+    function getLifetimeTokenArchives(
+        address vaultOwner,
+        uint256 tokenId
+    ) external view returns (string[] memory) {
+        require(tokenId < lifetimeTokenCount[vaultOwner], "Invalid token ID");
+        return _lifetimeTokens[vaultOwner][tokenId].archiveCIDs;
+    }
+
+    /**
+     * @notice Check if a lifetime token has expired via time-lock
+     */
+    function isLifetimeTokenExpired(
+        address vaultOwner,
+        uint256 tokenId
+    ) external view returns (bool) {
+        require(tokenId < lifetimeTokenCount[vaultOwner], "Invalid token ID");
+        LifetimeAccessToken storage token = _lifetimeTokens[vaultOwner][tokenId];
+        return token.revokeAfter > 0 && block.timestamp > token.revokeAfter;
+    }
+
+    /**
+     * @notice Get all token IDs for a specific holder under a vault
+     */
+    function getHolderTokenIds(
+        address vaultOwner,
+        address holder
+    ) external view returns (uint256[] memory) {
+        return _holderTokenIds[vaultOwner][holder];
     }
 
     // --------------------------------------------------------

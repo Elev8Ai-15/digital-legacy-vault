@@ -206,7 +206,7 @@ contract Groth16Verifier {
         uint256[2] memory result;
         bool success;
 
-        assembly {
+        assembly ("memory-safe") {
             success := staticcall(gas(), 0x06, input, 0x80, result, 0x40)
         }
         require(success, "Point addition failed");
@@ -229,7 +229,7 @@ contract Groth16Verifier {
         uint256[2] memory result;
         bool success;
 
-        assembly {
+        assembly ("memory-safe") {
             success := staticcall(gas(), 0x07, input, 0x60, result, 0x40)
         }
         require(success, "Scalar multiplication failed");
@@ -288,7 +288,7 @@ contract Groth16Verifier {
         uint256[1] memory result;
         bool success;
 
-        assembly {
+        assembly ("memory-safe") {
             success := staticcall(gas(), 0x08, input, 0x300, result, 0x20)
         }
         require(success, "Pairing check failed");

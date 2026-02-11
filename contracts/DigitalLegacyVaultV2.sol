@@ -173,6 +173,10 @@ contract DigitalLegacyVaultV2 {
     // Passcode nonce tracking for wallet-signed redemption
     mapping(address => mapping(uint256 => bool)) private _passcodeNonces;
 
+    // Guardian revocation confirmations: vaultOwner => tokenId => guardian => confirmed
+    mapping(address => mapping(uint256 => mapping(address => bool))) private _revocationConfirmations;
+    mapping(address => mapping(uint256 => uint8)) private _revocationConfirmationCount;
+
     // Constants
     uint256 public constant MIN_CHECK_IN_INTERVAL = 30 days;
     uint256 public constant MAX_CHECK_IN_INTERVAL = 365 days;
@@ -532,12 +536,21 @@ contract DigitalLegacyVaultV2 {
 
         v.primaryBeneficiary.isVerified = true;
         v.claimInitiatedAt = block.timestamp;
-        
+
         // Increment nonce for anti-replay (if claim is later reset)
         v.primaryBeneficiary.claimNonce++;
         emit ClaimNonceIncremented(vaultOwner, v.primaryBeneficiary.claimNonce);
-        
+
         emit ClaimInitiated(vaultOwner, msg.sender, v.triggerMethod);
+
+        // Auto-transition to Claimed if guardian threshold already met
+        // (e.g., after emergency override where all guardians already confirmed)
+        uint8 confirmations = _countConfirmations(vaultOwner);
+        if (confirmations >= v.requiredGuardians) {
+            v.state = VaultState.Claimed;
+            emit StateChanged(vaultOwner, VaultState.Claimable, VaultState.Claimed);
+            emit SharesReleased(vaultOwner, v.primaryBeneficiary.beneficiaryAddress);
+        }
     }
 
     /**
@@ -645,8 +658,8 @@ contract DigitalLegacyVaultV2 {
     ) external onlyBeneficiary(vaultOwner) returns (uint256 passcodeId) {
         Vault storage v = vaults[vaultOwner];
         require(
-            v.state == VaultState.Claimed || v.primaryBeneficiary.isVerified,
-            "Beneficiary not verified or vault not claimed"
+            v.state == VaultState.Claimed,
+            "Vault not yet claimed"
         );
         require(passcodeHash != bytes32(0), "Invalid passcode hash");
         require(bytes(archiveCID).length > 0, "Empty archive CID");
@@ -805,7 +818,7 @@ contract DigitalLegacyVaultV2 {
 
     /**
      * @notice Guardian-initiated revocation of a lifetime token.
-     *         Requires guardian threshold confirmations.
+     *         Requires guardian threshold confirmations specific to this revocation.
      * @param vaultOwner Vault owner address
      * @param tokenId    Token to revoke
      */
@@ -817,10 +830,14 @@ contract DigitalLegacyVaultV2 {
         LifetimeAccessToken storage token = _lifetimeTokens[vaultOwner][tokenId];
         require(token.isActive, "Token already revoked");
 
-        // Check if guardian threshold is met for revocation
-        uint8 confirmations = _countConfirmations(vaultOwner);
+        // Track per-token revocation confirmations separately from share release
+        require(!_revocationConfirmations[vaultOwner][tokenId][msg.sender], "Already confirmed revocation");
+        _revocationConfirmations[vaultOwner][tokenId][msg.sender] = true;
+        _revocationConfirmationCount[vaultOwner][tokenId]++;
+
+        // Check if guardian threshold is met for this specific revocation
         require(
-            confirmations >= vaults[vaultOwner].requiredGuardians,
+            _revocationConfirmationCount[vaultOwner][tokenId] >= vaults[vaultOwner].requiredGuardians,
             "Insufficient guardian confirmations for revocation"
         );
 

@@ -481,24 +481,11 @@ describe("Phase 2: Verification Layer", function () {
             await vaultV2.connect(beneficiary).initiateClaim(owner.address, proofBytes);
             expect(await vaultV2.getVaultState(owner.address)).to.equal(2); // Still Claimable
 
-            // Guardian confirmations (confirmations carry over from emergency override,
-            // so all 5 are already confirmed — threshold of 3 is already met).
-            // The initiateClaim sets beneficiary.isVerified = true, and since
-            // confirmations >= requiredGuardians (5 >= 3), the next confirmShareRelease
-            // would fail with "Already confirmed" since all guardians already confirmed.
-            // The state transition to Claimed happens in confirmShareRelease when
-            // threshold is met, but since hasConfirmedRelease is reused, all 5 guardians
-            // already have it set. We need to verify the vault still needs share release.
-            // Since all 5 already confirmed via emergency override, and beneficiary is
-            // now verified, calling confirmShareRelease from any guardian will revert
-            // with "Already confirmed".
-            // The vault won't auto-transition; someone must call confirmShareRelease.
-            // But all guardians already confirmed, so they can't confirm again.
-            // This is an edge case in the contract design — emergency confirmations
-            // count toward share release. The threshold (3) is already met (5 >= 3),
-            // but the state transition only happens inside confirmShareRelease.
-            // Since no guardian can call it again, we verify the state stays Claimable.
-            expect(await vaultV2.getVaultState(owner.address)).to.equal(2); // Still Claimable
+            // Guardian confirmations carry over from emergency override,
+            // so all 5 are already confirmed (threshold of 3 is met).
+            // initiateClaim now auto-transitions to Claimed when confirmations
+            // already meet the threshold.
+            expect(await vaultV2.getVaultState(owner.address)).to.equal(3); // Claimed
         });
 
         it("should prevent owner from revoking during ClaimPending", async function () {

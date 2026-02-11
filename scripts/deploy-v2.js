@@ -204,6 +204,8 @@ async function main() {
   console.log(`   Min check-in: ${await vault.MIN_CHECK_IN_INTERVAL()} seconds`);
   console.log(`   Min grace:    ${await vault.MIN_GRACE_PERIOD()} seconds`);
   console.log(`   Claim cooldown: ${await vault.CLAIM_COOLDOWN()} seconds`);
+  console.log(`   Passcode default duration: ${await vault.DEFAULT_PASSCODE_DURATION()} seconds`);
+  console.log(`   Max lifetime tokens/vault: ${await vault.MAX_LIFETIME_TOKENS_PER_VAULT()}`);
 
   // If local/testnet, enable ZKP by default for testing
   if ((isLocal || isTestnet) && !zkpEnabled) {
@@ -232,6 +234,8 @@ async function main() {
       zkpEnabled: isLocal || isTestnet,
       oracleType: isLocal ? "MockOracle" : "ChainlinkDeathOracle",
       verificationKeyLoaded: fs.existsSync(vkPath),
+      passcodeModule: true,
+      lifetimeTokensEnabled: true,
     },
   };
 

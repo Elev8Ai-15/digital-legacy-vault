@@ -64,6 +64,11 @@ const ClaimPhase = {
     RECONSTRUCTING: 'reconstructing',
     COMPLETE: 'complete',
     FAILED: 'failed',
+    // Phase 3: Digital Passcodes
+    ISSUING_PASSCODE: 'issuing_passcode',
+    PASSCODE_ISSUED: 'passcode_issued',
+    REDEEMING_PASSCODE: 'redeeming_passcode',
+    PASSCODE_REDEEMED: 'passcode_redeemed',
 };
 
 
@@ -84,6 +89,19 @@ const VAULT_V2_ABI = [
     'function confirmShareRelease(address vaultOwner) external',
     'function submitDeathCertificate(address vaultOwner, bytes32 _certHash) external',
 
+    // Phase 3: Digital Passcodes
+    'function issueOneTimePasscode(address vaultOwner, bytes32 passcodeHash, string archiveCID, uint256 duration) external returns (uint256 passcodeId)',
+    'function redeemOneTimePasscode(address vaultOwner, uint256 passcodeId, bytes32 nonce) external returns (string)',
+    'function getPasscodeInfo(address vaultOwner, uint256 passcodeId) view returns (address issuedTo, uint256 issuedAt, uint256 expiresAt, bool isRedeemed, bool isExpired)',
+    'function getPasscodeArchive(address vaultOwner, uint256 passcodeId) view returns (string)',
+    'function passcodeCount(address) view returns (uint256)',
+    'function verifyLifetimeAccess(address vaultOwner, address holder, string archiveCID) view returns (bool hasAccess, uint256 tokenId)',
+    'function getLifetimeTokenInfo(address vaultOwner, uint256 tokenId) view returns (address holder, uint256 issuedAt, bool isActive, uint256 revokeAfter, bytes32 policyHash)',
+    'function getLifetimeTokenArchives(address vaultOwner, uint256 tokenId) view returns (string[])',
+    'function isLifetimeTokenExpired(address vaultOwner, uint256 tokenId) view returns (bool)',
+    'function getHolderTokenIds(address vaultOwner, address holder) view returns (uint256[])',
+    'function lifetimeTokenCount(address) view returns (uint256)',
+
     // Events
     'event ZKPVerified(address indexed owner, address indexed beneficiary, bytes32 claimBinding)',
     'event ClaimInitiated(address indexed owner, address indexed beneficiary, uint8 method)',
@@ -91,6 +109,10 @@ const VAULT_V2_ABI = [
     'event GuardianConfirmed(address indexed owner, address indexed guardian)',
     'event SharesReleased(address indexed owner, address indexed beneficiary)',
     'event StateChanged(address indexed owner, uint8 oldState, uint8 newState)',
+    'event OneTimePasscodeIssued(address indexed vaultOwner, address indexed beneficiary, uint256 passcodeId, string archiveCID, uint256 expiresAt)',
+    'event OneTimePasscodeRedeemed(address indexed vaultOwner, address indexed beneficiary, uint256 passcodeId, string archiveCID)',
+    'event LifetimeTokenMinted(address indexed vaultOwner, address indexed holder, uint256 tokenId, bytes32 policyHash)',
+    'event LifetimeTokenRevoked(address indexed vaultOwner, uint256 tokenId, address indexed holder)',
 ];
 
 
@@ -466,6 +488,226 @@ class ClaimFlowManager {
 
 
     // --------------------------------------------------------
+    // PHASE 3: DIGITAL PASSCODES
+    // --------------------------------------------------------
+
+    /**
+     * Issue a one-time passcode for a specific IPFS archive.
+     * Generates a random nonce client-side, hashes it, and submits
+     * the hash on-chain. The nonce is returned for the beneficiary
+     * to redeem later (wallet-signed).
+     *
+     * @param {Object} params
+     * @param {string} params.archiveCID - IPFS CID to unlock
+     * @param {number} [params.duration] - Passcode validity in seconds (0 = default 48h)
+     * @returns {Promise<{passcodeId: number, nonce: string, expiresAt: Date, txHash: string}>}
+     */
+    async issueOneTimePasscode({ archiveCID, duration = 0 }) {
+        this._setPhase(ClaimPhase.ISSUING_PASSCODE);
+
+        try {
+            // Generate random nonce client-side (32 bytes)
+            const nonceBytes = ethers.randomBytes(32);
+            const nonce = ethers.hexlify(nonceBytes);
+            const passcodeHash = ethers.keccak256(nonceBytes);
+
+            this._emit('status', {
+                phase: 'issuing_passcode',
+                message: `Issuing one-time passcode for archive ${archiveCID.slice(0, 12)}...`,
+            });
+
+            const tx = await this.vault.issueOneTimePasscode(
+                this.vaultOwner,
+                passcodeHash,
+                archiveCID,
+                duration
+            );
+            const receipt = await tx.wait();
+
+            // Extract passcode ID from event
+            const event = receipt.logs.find(log => {
+                try {
+                    return this.vault.interface.parseLog(log)?.name === 'OneTimePasscodeIssued';
+                } catch { return false; }
+            });
+
+            const parsedEvent = event ? this.vault.interface.parseLog(event) : null;
+            const passcodeId = parsedEvent ? Number(parsedEvent.args.passcodeId) : null;
+            const expiresAt = parsedEvent
+                ? new Date(Number(parsedEvent.args.expiresAt) * 1000)
+                : null;
+
+            this._setPhase(ClaimPhase.PASSCODE_ISSUED);
+
+            this._emit('status', {
+                phase: 'passcode_issued',
+                message: `Passcode #${passcodeId} issued. Expires: ${expiresAt?.toLocaleString()}`,
+                passcodeId,
+                nonce,
+                expiresAt: expiresAt?.toISOString(),
+            });
+
+            return { passcodeId, nonce, expiresAt, txHash: tx.hash };
+        } catch (error) {
+            this._emit('error', { phase: 'issuing_passcode', error });
+            throw error;
+        }
+    }
+
+    /**
+     * Redeem a one-time passcode using the nonce.
+     * The beneficiary provides the nonce (preimage of the on-chain hash)
+     * to prove they hold the passcode.
+     *
+     * @param {Object} params
+     * @param {number} params.passcodeId - The passcode to redeem
+     * @param {string} params.nonce      - The original nonce (hex string)
+     * @returns {Promise<{archiveCID: string, txHash: string}>}
+     */
+    async redeemOneTimePasscode({ passcodeId, nonce }) {
+        this._setPhase(ClaimPhase.REDEEMING_PASSCODE);
+
+        try {
+            this._emit('status', {
+                phase: 'redeeming_passcode',
+                message: `Redeeming passcode #${passcodeId}...`,
+            });
+
+            // Sign the redemption message with beneficiary wallet
+            const redemptionMessage = ethers.solidityPackedKeccak256(
+                ['address', 'uint256', 'bytes32'],
+                [this.vaultOwner, passcodeId, nonce]
+            );
+            const walletSignature = await this.signer.signMessage(
+                ethers.getBytes(redemptionMessage)
+            );
+
+            this._emit('status', {
+                phase: 'wallet_signed',
+                message: 'Wallet signature obtained. Submitting redemption...',
+                signature: walletSignature.slice(0, 20) + '...',
+            });
+
+            const tx = await this.vault.redeemOneTimePasscode(
+                this.vaultOwner,
+                passcodeId,
+                nonce
+            );
+            const receipt = await tx.wait();
+
+            // Extract archive CID from event
+            const event = receipt.logs.find(log => {
+                try {
+                    return this.vault.interface.parseLog(log)?.name === 'OneTimePasscodeRedeemed';
+                } catch { return false; }
+            });
+
+            const parsedEvent = event ? this.vault.interface.parseLog(event) : null;
+            const archiveCID = parsedEvent ? parsedEvent.args.archiveCID : null;
+
+            this._setPhase(ClaimPhase.PASSCODE_REDEEMED);
+
+            this._emit('status', {
+                phase: 'passcode_redeemed',
+                message: `Passcode #${passcodeId} redeemed. Archive: ${archiveCID}`,
+                archiveCID,
+            });
+
+            return { archiveCID, txHash: tx.hash };
+        } catch (error) {
+            this._emit('error', { phase: 'redeeming_passcode', error });
+            throw error;
+        }
+    }
+
+    /**
+     * Get information about a specific passcode.
+     *
+     * @param {number} passcodeId
+     * @returns {Promise<Object>}
+     */
+    async getPasscodeInfo(passcodeId) {
+        const [info, archiveCID] = await Promise.all([
+            this.vault.getPasscodeInfo(this.vaultOwner, passcodeId),
+            this.vault.getPasscodeArchive(this.vaultOwner, passcodeId),
+        ]);
+        return {
+            issuedTo: info.issuedTo,
+            issuedAt: new Date(Number(info.issuedAt) * 1000),
+            expiresAt: new Date(Number(info.expiresAt) * 1000),
+            isRedeemed: info.isRedeemed,
+            isExpired: info.isExpired,
+            archiveCID,
+        };
+    }
+
+    /**
+     * Get all passcodes issued for this vault.
+     *
+     * @returns {Promise<Object[]>}
+     */
+    async getAllPasscodes() {
+        const count = Number(await this.vault.passcodeCount(this.vaultOwner));
+        const results = [];
+        for (let i = 0; i < count; i++) {
+            results.push(await this.getPasscodeInfo(i));
+        }
+        return results;
+    }
+
+    /**
+     * Verify if a holder has lifetime access to a specific archive.
+     *
+     * @param {string} holderAddress
+     * @param {string} archiveCID
+     * @returns {Promise<{hasAccess: boolean, tokenId: number}>}
+     */
+    async verifyLifetimeAccess(holderAddress, archiveCID) {
+        const result = await this.vault.verifyLifetimeAccess(
+            this.vaultOwner,
+            holderAddress,
+            archiveCID
+        );
+        return {
+            hasAccess: result.hasAccess,
+            tokenId: Number(result.tokenId),
+        };
+    }
+
+    /**
+     * Get all lifetime access tokens for a specific holder under this vault.
+     *
+     * @param {string} holderAddress
+     * @returns {Promise<Object[]>}
+     */
+    async getHolderLifetimeTokens(holderAddress) {
+        const tokenIds = await this.vault.getHolderTokenIds(this.vaultOwner, holderAddress);
+        const tokens = [];
+        for (const id of tokenIds) {
+            const tid = Number(id);
+            const [info, archives, isExpired] = await Promise.all([
+                this.vault.getLifetimeTokenInfo(this.vaultOwner, tid),
+                this.vault.getLifetimeTokenArchives(this.vaultOwner, tid),
+                this.vault.isLifetimeTokenExpired(this.vaultOwner, tid),
+            ]);
+            tokens.push({
+                tokenId: tid,
+                holder: info.holder,
+                issuedAt: new Date(Number(info.issuedAt) * 1000),
+                isActive: info.isActive,
+                isExpired,
+                revokeAfter: Number(info.revokeAfter) > 0
+                    ? new Date(Number(info.revokeAfter) * 1000)
+                    : null,
+                policyHash: info.policyHash,
+                archiveCIDs: archives,
+            });
+        }
+        return tokens;
+    }
+
+
+    // --------------------------------------------------------
     // COMPREHENSIVE STATUS
     // --------------------------------------------------------
 
@@ -511,6 +753,7 @@ class ClaimFlowManager {
             archives: archives,
             localPhase: this.phase,
             sharesCollected: this.claimData.shares.length,
+            passcodes: await this.getAllPasscodes().catch(() => []),
         };
     }
 

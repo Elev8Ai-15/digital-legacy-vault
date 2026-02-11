@@ -58,6 +58,24 @@ const VAULT_ABI = [
   "function MAX_CHECK_IN_INTERVAL() external view returns (uint256)",
   "function MIN_GRACE_PERIOD() external view returns (uint256)",
   
+  // Phase 3: Digital Passcodes
+  "function issueOneTimePasscode(address vaultOwner, bytes32 passcodeHash, string archiveCID, uint256 duration) external returns (uint256)",
+  "function redeemOneTimePasscode(address vaultOwner, uint256 passcodeId, bytes32 nonce) external returns (string)",
+  "function getPasscodeInfo(address vaultOwner, uint256 passcodeId) view returns (address issuedTo, uint256 issuedAt, uint256 expiresAt, bool isRedeemed, bool isExpired)",
+  "function getPasscodeArchive(address vaultOwner, uint256 passcodeId) view returns (string)",
+  "function passcodeCount(address) view returns (uint256)",
+
+  // Phase 3: Lifetime Access Tokens
+  "function mintLifetimeAccessToken(address holder, string[] archiveCIDs, bytes32 policyHash, uint256 revokeAfter) external returns (uint256)",
+  "function revokeLifetimeToken(uint256 tokenId) external",
+  "function updateLifetimeTokenPolicy(uint256 tokenId, bytes32 newPolicyHash) external",
+  "function verifyLifetimeAccess(address vaultOwner, address holder, string archiveCID) view returns (bool hasAccess, uint256 tokenId)",
+  "function getLifetimeTokenInfo(address vaultOwner, uint256 tokenId) view returns (address holder, uint256 issuedAt, bool isActive, uint256 revokeAfter, bytes32 policyHash)",
+  "function getLifetimeTokenArchives(address vaultOwner, uint256 tokenId) view returns (string[])",
+  "function isLifetimeTokenExpired(address vaultOwner, uint256 tokenId) view returns (bool)",
+  "function getHolderTokenIds(address vaultOwner, address holder) view returns (uint256[])",
+  "function lifetimeTokenCount(address) view returns (uint256)",
+
   // Events
   "event VaultCreated(address indexed owner, uint256 checkInInterval, uint8 requiredGuardians)",
   "event CheckIn(address indexed owner, uint256 timestamp)",
@@ -70,6 +88,10 @@ const VAULT_ABI = [
   "event VaultRevoked(address indexed owner)",
   "event ContentArchiveAdded(address indexed owner, string cid)",
   "event DeathCertificateVerified(address indexed owner, bytes32 certHash, uint256 confidence)",
+  "event OneTimePasscodeIssued(address indexed vaultOwner, address indexed beneficiary, uint256 passcodeId, string archiveCID, uint256 expiresAt)",
+  "event OneTimePasscodeRedeemed(address indexed vaultOwner, address indexed beneficiary, uint256 passcodeId, string archiveCID)",
+  "event LifetimeTokenMinted(address indexed vaultOwner, address indexed holder, uint256 tokenId, bytes32 policyHash)",
+  "event LifetimeTokenRevoked(address indexed vaultOwner, uint256 tokenId, address indexed holder)",
 ];
 
 // ============================================================

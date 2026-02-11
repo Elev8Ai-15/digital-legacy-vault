@@ -479,11 +479,10 @@ describe("Phase 2: Verification Layer", function () {
                 [FAKE_PA, FAKE_PB, FAKE_PC, await fakePubSignals(IDENTITY_HASH, owner.address)]
             );
             await vaultV2.connect(beneficiary).initiateClaim(owner.address, proofBytes);
-            expect(await vaultV2.getVaultState(owner.address)).to.equal(2); // Still Claimable
 
             // Guardian confirmations carry over from emergency override,
             // so all 5 are already confirmed (threshold of 3 is met).
-            // initiateClaim now auto-transitions to Claimed when confirmations
+            // initiateClaim auto-transitions to Claimed when confirmations
             // already meet the threshold.
             expect(await vaultV2.getVaultState(owner.address)).to.equal(3); // Claimed
         });

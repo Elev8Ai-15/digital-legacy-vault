@@ -41,10 +41,11 @@ const VAULT_ABI = [
   // Claim Process
   "function initiateClaim(address vaultOwner, bytes calldata zkProof) external",
   "function confirmShareRelease(address vaultOwner) external",
-  
+  "function emergencyGuardianOverride(address vaultOwner) external",
+
   // Vault Management
   "function revokeVault() external",
-  
+
   // View Functions
   "function getVaultState(address owner) external view returns (uint8)",
   "function getTimeSinceCheckIn(address owner) external view returns (uint256)",
@@ -52,6 +53,10 @@ const VAULT_ABI = [
   "function getContentArchives(address owner) external view returns (string[] memory)",
   "function isClaimable(address owner) external view returns (bool)",
   "function hasVault(address) external view returns (bool)",
+  "function getBeneficiaryInfo(address owner) external view returns (address beneficiaryAddress, uint256 identityCommitment, bool isVerified, uint256 claimNonce)",
+  "function getClaimNonce(address owner) external view returns (uint256)",
+  "function getClaimStatus(address owner) external view returns (bool beneficiaryVerified, bytes32 claimBinding, uint256 claimInitiatedAt, uint256 cooldownEnds, bool cooldownElapsed)",
+  "function getVaultSummary(address owner) external view returns (uint8 state, uint256 lastCheckIn, uint256 checkInInterval, uint256 gracePeriod, uint8 guardianCount, uint8 requiredGuardians, string vaultName, uint8 platformCount, bool zkpActive)",
   
   // Constants
   "function MIN_CHECK_IN_INTERVAL() external view returns (uint256)",
@@ -68,6 +73,7 @@ const VAULT_ABI = [
   // Phase 3: Lifetime Access Tokens
   "function mintLifetimeAccessToken(address holder, string[] archiveCIDs, bytes32 policyHash, uint256 revokeAfter) external returns (uint256)",
   "function revokeLifetimeToken(uint256 tokenId) external",
+  "function guardianRevokeLifetimeToken(address vaultOwner, uint256 tokenId) external",
   "function updateLifetimeTokenPolicy(uint256 tokenId, bytes32 newPolicyHash) external",
   "function verifyLifetimeAccess(address vaultOwner, address holder, string archiveCID) view returns (bool hasAccess, uint256 tokenId)",
   "function getLifetimeTokenInfo(address vaultOwner, uint256 tokenId) view returns (address holder, uint256 issuedAt, bool isActive, uint256 revokeAfter, bytes32 policyHash)",
@@ -90,8 +96,12 @@ const VAULT_ABI = [
   "event DeathCertificateVerified(address indexed owner, bytes32 certHash, uint256 confidence)",
   "event OneTimePasscodeIssued(address indexed vaultOwner, address indexed beneficiary, uint256 passcodeId, string archiveCID, uint256 expiresAt)",
   "event OneTimePasscodeRedeemed(address indexed vaultOwner, address indexed beneficiary, uint256 passcodeId, string archiveCID)",
+  "event ZKPVerificationResult(address indexed beneficiary, bool success)",
+  "event ClaimNonceIncremented(address indexed owner, uint256 newNonce)",
+  "event EmergencyOverride(address indexed owner, uint8 guardianConfirmations)",
   "event LifetimeTokenMinted(address indexed vaultOwner, address indexed holder, uint256 tokenId, bytes32 policyHash)",
   "event LifetimeTokenRevoked(address indexed vaultOwner, uint256 tokenId, address indexed holder)",
+  "event LifetimeTokenPolicyUpdated(address indexed vaultOwner, uint256 tokenId, bytes32 newPolicyHash)",
 ];
 
 // ============================================================
@@ -492,8 +502,9 @@ class VaultClient {
       "CheckIn", "StateChanged", "GuardianAdded", "GuardianConfirmed",
       "BeneficiarySet", "ClaimInitiated", "SharesReleased",
       "VaultRevoked", "ContentArchiveAdded", "DeathCertificateVerified",
+      "ZKPVerificationResult", "ClaimNonceIncremented", "EmergencyOverride",
       "OneTimePasscodeIssued", "OneTimePasscodeRedeemed",
-      "LifetimeTokenMinted", "LifetimeTokenRevoked",
+      "LifetimeTokenMinted", "LifetimeTokenRevoked", "LifetimeTokenPolicyUpdated",
     ];
     events.forEach((name) => this.onEvent(name, callback));
   }
